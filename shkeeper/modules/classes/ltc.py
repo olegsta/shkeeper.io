@@ -12,7 +12,7 @@ class Ltc(Crypto):
     network_currency = "LTC"
 
     def gethost(self):
-        host = environ.get("LTC_API_SERVER_HOST", "litcoin-shkeeper")
+        host = environ.get("LTC_API_SERVER_HOST", "litecoin-shkeeper")
         port = environ.get("LTC_SERVER_PORT", "6000")
         return f"{host}:{port}"
 
@@ -117,7 +117,7 @@ class Ltc(Crypto):
                 return f"Payout failed: not enought BTC to pay for transaction. Need {fee}, balance {amount}"
             else:
                 amount -= fee
-        current_fee = fee if fee not in (None, 0, 0.0, "0", "") else self.estimate_tx_fee(amount)["fee_satoshi"]        
+        current_fee = fee if fee not in (None, 0, 0.0, "0", "") else self.estimate_tx_fee(amount)["fee_satoshi"]
         response = requests.post(
             f"http://{self.gethost()}/{self.crypto}/payout/{destination}/{amount}/{current_fee}",
             auth=self.get_auth_creds(),
