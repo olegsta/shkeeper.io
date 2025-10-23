@@ -8,5 +8,5 @@ class ltc(BitcoinLikeCrypto):
     def getname(self):
         return "Litecoin"
 
-    def gethost(self):
-        return "litecoind:9332"
+    # def gethost(self):
+    #     return "litecoind:9332"
