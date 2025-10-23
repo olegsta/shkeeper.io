@@ -12,7 +12,7 @@ class Ltc(Crypto):
     network_currency = "LTC"
 
     def gethost(self):
-        host = environ.get("LTC_API_SERVER_HOST", "litcoin-shkeeper")
+        host = environ.get("LTC_API_SERVER_HOST", "litecoin-shkeeper")
         port = environ.get("LTC_SERVER_PORT", "6000")
         return f"{host}:{port}"
 
