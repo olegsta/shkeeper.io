@@ -8,7 +8,7 @@ from flask import request
 from flask import Response
 from flask import stream_with_context
 from shkeeper.modules.cryptos.btc import Btc
-from shkeeper.modules.cryptos.btc import Ltc
+from shkeeper.modules.cryptos.ltc import Ltc
 from flask import current_app as app
 from flask.json import JSONDecoder
 from flask_sqlalchemy import sqlalchemy

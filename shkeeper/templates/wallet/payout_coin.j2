@@ -71,15 +71,29 @@
             <p class="ms-2">{{ crypto.crypto|upper }}</p>
           </div>
         </div>
-        <div><p></p></div>
+        {% if crypto.crypto|upper in ["BTC", "LTC"] %}
+          <div><p>Fee</p></div>
+        {% else %}
+          <div></div>
+        {% endif %}
         <div>
           <div class="d-flex align-items-center">
-            <input
-              value="0"
-              class="fee-input form-control common-text"
-              type="hidden"
-              name="fee"
-            />
+            {% if crypto.crypto|upper in ["BTC", "LTC"] %}
+              <input
+                class="fee-input form-control common-text"
+                id="fee-input"
+                type="text"
+                name="fee"
+              />
+              <p class="ms-2 fee-label" id="estimate-fee-btn" style="cursor: pointer; color: white;"> sat/vByte</p>
+            {% else %}
+              <input
+                value="0"
+                class="fee-input form-control common-text"
+                type="hidden"
+                name="fee"
+              />
+            {% endif %}
             <p class="ms-2"></p>
           </div>
         </div>
@@ -125,17 +139,39 @@
     }
   }
 
-  function show_est_fee() {
-    let amount = document.querySelector(".fee-input").value;
-    if (!amount) return;
-    fetch("/api/v1/{{crypto.crypto}}/estimate-tx-fee/" + amount)
+  document.addEventListener("DOMContentLoaded", function() {
+    const cryptoName = "{{ crypto.crypto|upper }}";
+
+    if (cryptoName === "BTC" || cryptoName === "LTC") {
+      const feeLabel = document.querySelector(".fee-label");
+      if (feeLabel) {
+        feeLabel.style.cursor = "pointer";
+        feeLabel.addEventListener("click", function() {
+          show_est_fee(cryptoName);
+        });
+      }
+    }
+  });
+
+  function show_est_fee(crypto) {
+    const feeInput = document.querySelector("#fee-input");
+    if (!feeInput) return;
+
+    const amount = feeInput.value || "1";
+
+    fetch(`/api/v1/${crypto}/estimate-tx-fee/${amount}`)
       .then(response => response.json())
       .then(data => {
-        if (!data.fee) return;
-        document.querySelector("#est_fee").innerText = data.fee;
-        check_fee();
-        console.log(data);
+        if (!data.fee_satoshi) return;
+
+        const feeSatoshi = data.fee_satoshi;
+        feeInput.value = feeSatoshi;
+        const estFee = document.querySelector("#est_fee");
+        if (estFee) estFee.innerText = feeSatoshi;
+
+        if (typeof check_fee === "function") check_fee();
       })
+      .catch(err => console.error("error:", err));
   }
 
   var not_en_trx_msg = `Not enough {{ crypto.network_currency }} to pay for transaction. Please top up the fee-deposit account.`;
@@ -163,6 +199,9 @@
 
     let addr = document.querySelector("#paddress").value.trim();
     let amount = document.querySelector(".fee-input").value;
+    let feeInput = document.querySelector("#fee-input");
+    let fee = feeInput ? feeInput.value : 0;
+
     if (!amount) {
       alert('Please enter amount to send.');
       return;
@@ -184,7 +223,7 @@
       body: JSON.stringify({
         destination: addr,
         amount: amount,
-        fee: 0,
+        fee: fee,
       })
     })
       .then(response => response.json())
