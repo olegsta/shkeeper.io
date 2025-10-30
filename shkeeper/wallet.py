@@ -98,7 +98,7 @@ def payout(crypto_name):
     if isinstance(crypto, Ethereum) and crypto_name != "ETH":
         tmpl = "wallet/payout_eth.j2"
 
-    if crypto_name in ["ETH", "BNB", "BTC", "LTC", "XRP", "MATIC", "AVAX", "SOL"]:
+    if crypto_name in ["ETH", "BNB", "BTC", "XRP", "MATIC", "AVAX", "SOL"]:
         tmpl = "wallet/payout_coin.j2"
 
     if "BTC-LIGHTNING" == crypto_name:

@@ -78,7 +78,7 @@
         {% endif %}
         <div>
           <div class="d-flex align-items-center">
-            {% if crypto.crypto|upper in ["BTC", "LTC"] %}
+            {% if crypto.crypto|upper in ["BTC", "LTC", "DOGE"] %}
               <input
                 class="fee-input form-control common-text"
                 id="fee-input"
@@ -142,7 +142,7 @@
   document.addEventListener("DOMContentLoaded", function() {
     const cryptoName = "{{ crypto.crypto|upper }}";
 
-    if (cryptoName === "BTC" || cryptoName === "LTC") {
+    if (cryptoName === "BTC" || cryptoName === "LTC" || cryptoName == "DOGE") {
       const feeLabel = document.querySelector(".fee-label");
       if (feeLabel) {
         feeLabel.style.cursor = "pointer";
