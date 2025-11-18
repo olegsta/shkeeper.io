@@ -305,7 +305,6 @@ function sendAction()
     let paymentPartiallyPaid = validateFloatValue(document.getElementById("llimit"));
     let paymentAddedFee = validateFloatValue(document.getElementById("ulimit"));
     let recalculateTerm = getRecalcTermHour();
-    let callbackUrl = validateCallback(document.getElementById("callback-url"));
     let confirationNumber = validateNumValue(document.getElementById("confirmations"));
     if(check == false)
     {
@@ -319,7 +318,6 @@ function sendAction()
       policyStatus: policyStatus,
       policyValue: policyValue,
       partiallPaid:  paymentPartiallyPaid,
-      callbackUrl:  callbackUrl,
       addedFee: paymentAddedFee,
       confirationNum: confirationNumber,
       recalc: recalculateTerm //int
@@ -345,17 +343,6 @@ function sendAction()
         element.classList.remove("red-highlight");
       }
       else{
-        element.classList.add("red-highlight");
-        check = false;
-      }
-      return element.value;
-    }
-    function validateCallback(element) {
-      element.value = element.value.trim();
-      const urlRegex = /^(https?:\/\/)[\w\-\.]+(\.[a-z]{2,})(:[0-9]+)?(\/.*)?$/i;
-      if (element.value.match(urlRegex)) {
-        element.classList.remove("red-highlight");
-      } else {
         element.classList.add("red-highlight");
         check = false;
       }
