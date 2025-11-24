@@ -98,8 +98,6 @@ class Wallet(db.Model):
         res = crypto.mkpayout(
             self.pdest, balance, self.pfee, subtract_fee_from_amount=True
         )
-        app.logger.warning("Using already do_payout")
-        app.logger.warning(f"Using already do_payout {res}")
         if "result" in res and res["result"]:
             idtxs = (
                 res["result"] if isinstance(res["result"], list) else [res["result"]]
@@ -596,7 +594,7 @@ class Payout(db.Model):
     crypto = db.Column(db.String)
     dest_addr = db.Column(db.String)
     callback_url = db.Column(db.String, nullable=True)
-    task_id = db.Column(db.String, unique=True, nullable=False)
+    task_id = db.Column(db.String, unique=True, nullable=False, index=True)
     external_id = db.Column(db.String, unique=True, nullable=True)
     status = db.Column(db.Enum(PayoutStatus), default=PayoutStatus.IN_PROGRESS)
     transactions = db.relationship("PayoutTx", backref="payout", lazy=True)

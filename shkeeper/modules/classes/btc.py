@@ -61,7 +61,6 @@ class Btc(Crypto):
             f"http://{self.gethost()}/{self.crypto}/task/{id}",
             auth=self.get_auth_creds(),
         ).json(parse_float=Decimal)
-        app.logger.warning(f"get_task: {response}")
         return response
 
     def getstatus(self):
@@ -92,7 +91,6 @@ class Btc(Crypto):
             f"http://{self.gethost()}/{self.crypto}/transaction/{tx}",
             auth=self.get_auth_creds(),
         ).json(parse_float=Decimal)
-        app.logger.warning(f"getaddrbytx: {response}")
         result = []
         for address, amount, confirmations, category in response:
             result.append([address, Decimal(amount), confirmations, category])
