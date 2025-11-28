@@ -87,10 +87,9 @@ class PayoutService:
                 p = Payout.query.get(pid)
                 p.task_id = task_id
             db.session.commit()
-        if app.config.get("ENABLE_PAYOUT_CALLBACK"):
-            res["external_ids"] = [
-                req.get("external_id")
-                for req in payout_list
-                if req.get("external_id")
-            ]
+        res["external_ids"] = [
+            req.get("external_id")
+            for req in payout_list
+            if req.get("external_id")
+        ]
         return res
