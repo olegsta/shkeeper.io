@@ -263,10 +263,6 @@ def send_payout_notification(notif: Notification):
         db.session.commit()
         return False
 
-    if notif.message:
-        app.logger.warning(f"[PAYOUT {payout.id}] Skipping: previous error exists")
-        return False
-
     tx = payout.transactions[0] if payout.transactions else None
     tx_hash = tx.txid if tx else None
     if not tx_hash:

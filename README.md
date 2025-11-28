@@ -657,15 +657,15 @@ The task results are an array of objects, each containing the original payout re
   "amount": <amount_to_send>,
   "destination": "<addr>",
   "fee": "<transaction_fee>",
-  "callback_url": "<callback_url>",
-  "external_id": "<external_id>"
+  "callback_url": "<callback_url>", (OPTIONAL)
+  "external_id": "<external_id>" (OPTIONAL)
 }
 ```
 - `amount`: The amount to be sent.
 - `destination`: The address to which the amount should be sent.
   - For XRP, the address must be provided in the X-address format. The X-address format replaces the use of a separate destination tag when sending funds to a multi-user wallet on the XRP ledger, such as those of exchanges and custodial services.
-- `callback_url`: The payout callback_url.
-- `external_id`: The payout external_id.
+- `callback_url`: The payout callback_url, optional.
+- `external_id`: The payout external_id, optional.
 - `fee`: The transaction fee.
   - This must always be specified, even for cryptocurrencies with automatically determined fees.
   - For BTC, it is specified in sat/vByte; for LTC and DOGE, it is in sat/Byte.
@@ -699,8 +699,8 @@ curl --location --request POST 'https://demo.shkeeper.io/api/v1/ETH-USDC/payout'
 {
   "amount": <amount_to_send>,
   "dest": "<addr>",
-  "callback_url": "<callback_url>",
-  "external_id": "<external_id>"
+  "callback_url": "<callback_url>", (OPTIONAL)
+  "external_id": "<external_id>" (OPTIONAL)
 }
 ```
 For sending XRP, you can optionally pass a `dest_tag`. If provided, the address should be given in the regular format, and SHKeeper will automatically convert it to X-address format. Alternatively, you can manually convert the XRP address to X-address format and pass it in the `dest` field; in this case, `dest_tag` does not need to be provided.
@@ -818,12 +818,12 @@ curl --location --request GET 'https://demo.shkeeper.io/api/v1/ETH/balance' \
 <a name="checking-payout-status"></a>
 5.2.11.5. Checking Payout Status
 Endpoint: /api/v1/<crypto_name>/payout/status
-Authorization: API Key required (header Authorization: Bearer <API_KEY> или как у вас реализовано в @api_key_required)
+Authorization: API Key required
 HTTP request method: GET
 Query Parameters:
 ```
 curl --location --request GET 'https://demo.shkeeper.io/api/v1/ETH-USDC/payout/status?external_id=abc123' \
---header 'Authorization: Bearer nApijGv8djih7ozY' \
+--header 'X-Shkeeper-API-Key: nApijGv8djih7ozY' \
 --header 'Content-Type: application/json'
 ```
 **Successful Response:**
