@@ -664,8 +664,8 @@ The task results are an array of objects, each containing the original payout re
 - `amount`: The amount to be sent.
 - `destination`: The address to which the amount should be sent.
   - For XRP, the address must be provided in the X-address format. The X-address format replaces the use of a separate destination tag when sending funds to a multi-user wallet on the XRP ledger, such as those of exchanges and custodial services.
-- `callback_url`: The payout callback_url, optional.
-- `external_id`: The payout external_id, optional.
+- `callback_url`: (optional) The URL to which SHKeeper will send notifications when payouts occur.
+- `external_id`: (optional) A unique order_id from your store.
 - `fee`: The transaction fee.
   - This must always be specified, even for cryptocurrencies with automatically determined fees.
   - For BTC, it is specified in sat/vByte; for LTC and DOGE, it is in sat/Byte.
@@ -683,11 +683,28 @@ Since the payout task is an asynchronous process, the call will always complete 
 curl --location --request POST 'https://demo.shkeeper.io/api/v1/ETH-USDC/payout' \
 --header 'Authorization: Basic  nApijGv8djih7ozY' \
 --header 'Content-Type: application/json' \
---data-raw '{"amount":107,"destination":"0xBD26e3512ce84F315e90E3FE75907bfbB5bD0c44","fee":"10", "callback_url": 'https://my.callback.com/payout'}'
+--data-raw '{"amount":107,"destination":"0xBD26e3512ce84F315e90E3FE75907bfbB5bD0c44","fee":"10", "callback_url": "https://my.payout.com/notification", "external_id": "435345534"}'
 ```
 **Successful Response:**
 ```
-{"task_id":"b2a01bb0-8abe-403b-a3fa-8124c84bcf23", "external_id": ""}
+{"task_id":"b2a01bb0-8abe-403b-a3fa-8124c84bcf23", "external_id": "435345534"}
+```
+Note:
+If enable_payout_callback is enabled in SHKeeper, a callback will be sent automatically upon a successful payout.
+If a callback_url is provided in the request, SHKeeper will send the notification to that URL.
+Callback Notification Example:
+```
+{
+  "payout_id": 14,
+  "external_id": "435345534",
+  "tx_hash": "AF732D1D1254C97A77F4DD08553725E6ECC011CA6DCD12BC65FA1D8551E54E6D",
+  "status": "SUCCESS",
+  "amount": "2.0000000000",
+  "crypto": "XRP",
+  "amount_fiat": "4.364200000000000000",
+  "currency_fiat": "USD",
+  "timestamp": "2025-11-27T13:49:22"
+}
 ```
 <a name="creating-a-multipayout-task"></a>
 ##### 5.2.11.2. Creating a Multipayout Task
@@ -710,14 +727,21 @@ For sending XRP, you can optionally pass a `dest_tag`. If provided, the address 
 curl --location --request POST 'https://demo.shkeeper.io/api/v1/ETH-USDT/multipayout' \
 --header 'Authorization: Basic  nApijGv8djih7ozY' \
 --header 'Content-Type: application/json' \
---data-raw '[{"dest":"0xE77895BAda700d663f033510f73f1E988CF55756","amount":"100"},{"dest":"0x7C4C7D3010d31329dd8244617C46e460E5EF8a6F","amount":"200.11"}]'
+--data-raw '[{"dest":"0xE77895BAda700d663f033510f73f1E988CF55756","amount":"100", "external_id": "43234", "callback_url": "https://my.payout.com/notification"},{"dest":"0x7C4C7D3010d31329dd8244617C46e460E5EF8a6F","amount":"200.11", "external_id": "43235", "callback_url": "https://my.payout.com/notification"}]'
 ```
 **Successful Response:**
 ```
 {
-    "task_id": "0471adec-5de5-4668-bc1d-e8e7729cb676"
+  "task_id": "0471adec-5de5-4668-bc1d-e8e7729cb676",
+  "external_ids": [
+    "43234",
+    "43235"
+  ],
+
 }
 ```
+Note:
+The order of the external_ids array is guaranteed to match the exact order in which the payout items were provided in the request.
 **Error Response:**
 ```
 {
@@ -817,12 +841,15 @@ curl --location --request GET 'https://demo.shkeeper.io/api/v1/ETH/balance' \
 
 <a name="checking-payout-status"></a>
 5.2.11.5. Checking Payout Status
-Endpoint: /api/v1/<crypto_name>/payout/status
-Authorization: API Key required
-HTTP request method: GET
-Query Parameters:
+
+**Endpoint:** `/api/v1/<crypto_name>/payout/status`
+**Authorization:** ApiKey.
+**HTTP request method:**  GET
+
+**Query Parameters:**
+external_id	is Required.	External ID assigned to the payout. Used to query its status.
 ```
-curl --location --request GET 'https://demo.shkeeper.io/api/v1/ETH-USDC/payout/status?external_id=abc123' \
+curl --location --request GET 'https://demo.shkeeper.io/api/v1/BTC/payout/status?external_id=abc123' \
 --header 'X-Shkeeper-API-Key: nApijGv8djih7ozY' \
 --header 'Content-Type: application/json'
 ```
@@ -831,7 +858,7 @@ curl --location --request GET 'https://demo.shkeeper.io/api/v1/ETH-USDC/payout/s
 {
   "id": 114,
   "external_id": "abc123",
-  "crypto": "ETH-USDC",
+  "crypto": "BTC",
   "status": "SUCCESS",
   "amount": "100.50",
   "destination": "0x1234567890abcdef...",
