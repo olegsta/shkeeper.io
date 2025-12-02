@@ -722,6 +722,10 @@ Callback Notification Example:
 ```
 For sending XRP, you can optionally pass a `dest_tag`. If provided, the address should be given in the regular format, and SHKeeper will automatically convert it to X-address format. Alternatively, you can manually convert the XRP address to X-address format and pass it in the `dest` field; in this case, `dest_tag` does not need to be provided.
 
+Note:
+If enable_payout_callback is enabled in SHKeeper, a callback will be sent automatically upon a successful payout.
+If a callback_url is provided in the request, SHKeeper will send the notification to that URL.
+
 **Curl Example:**
 ```
 curl --location --request POST 'https://demo.shkeeper.io/api/v1/ETH-USDT/multipayout' \

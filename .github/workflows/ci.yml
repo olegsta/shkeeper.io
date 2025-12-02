@@ -23,4 +23,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: olegprin/shkeeper:7
+          tags: olegprin/shkeeper:8
