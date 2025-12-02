@@ -115,10 +115,10 @@ storageClassName: local-path
 # BTC and forks
 #
 
-# shkeeper:
-#   image: vsyshost/shkeeper:2.4.3
-#   port: 5000
-#   enable_payout_callback: true
+shkeeper:
+  image: vsyshost/shkeeper:2.4.3
+  port: 5000
+  enable_payout_callback: false
 
 btc:
   enabled: true
@@ -714,18 +714,23 @@ Callback Notification Example:
 <a name="creating-a-multipayout-task"></a>
 ##### 5.2.11.2. Creating a Multipayout Task
 
-**Endpoint:** `/api/v1/<crypto_name>/multipayout`  
-**Authorization:** HTTP Basic Auth.   
+**Endpoint:** `/api/v1/<crypto_name>/multipayout`   
+**Authorization:** HTTP Basic Auth.    
 **HTTP request method:**  POST request with a JSON object in the following format:  
 ```
-{
+[{
   "amount": <amount_to_send>,
   "dest": "<addr>",
   "callback_url": "<callback_url>", (OPTIONAL)
   "external_id": "<external_id>" (OPTIONAL)
-}
+}]
 ```
 For sending XRP, you can optionally pass a `dest_tag`. If provided, the address should be given in the regular format, and SHKeeper will automatically convert it to X-address format. Alternatively, you can manually convert the XRP address to X-address format and pass it in the `dest` field; in this case, `dest_tag` does not need to be provided.
+
+
+Note:
+If enable_payout_callback is enabled in SHKeeper, a callback will be sent automatically upon a successful payout.
+If a callback_url is provided in the request, SHKeeper will send the notification to that URL.
 
 **Curl Example:**
 ```
@@ -745,8 +750,10 @@ curl --location --request POST 'https://demo.shkeeper.io/api/v1/ETH-USDT/multipa
 
 }
 ```
+
 Note:
 The order of the external_ids array is guaranteed to match the exact order in which the payout items were provided in the request.
+
 **Error Response:**
 ```
 {
@@ -847,9 +854,9 @@ curl --location --request GET 'https://demo.shkeeper.io/api/v1/ETH/balance' \
 <a name="checking-payout-status"></a>
 5.2.11.5. Checking Payout Status
 
-**Endpoint:** `/api/v1/<crypto_name>/payout/status`
-**Authorization:** ApiKey.
-**HTTP request method:**  GET
+**Endpoint:** `/api/v1/<crypto_name>/payout/status`        
+**Authorization:** ApiKey.        
+**HTTP request method:**  GET         
 
 **Query Parameters:**
 external_id	is Required.	External ID assigned to the payout. Used to query its status.

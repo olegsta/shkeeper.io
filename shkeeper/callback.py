@@ -211,7 +211,7 @@ def poll_unconfirmed_payouts():
                 app.logger.info(f"poll_unconfirmed_payouts confirmations {confirmations}")
             except Exception:
                 continue
-            if confirmations > app.config.get("MIN_CONFIRMATION_BLOCK_FOR_PAYOUT"):
+            if confirmations > int(app.config.get("MIN_CONFIRMATION_BLOCK_FOR_PAYOUT")):
                 all_confirmed = True
                 if not tx_to_notify:
                     tx_to_notify = tx
