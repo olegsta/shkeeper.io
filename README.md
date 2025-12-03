@@ -27,6 +27,7 @@
         - [Creating a payout task](#creating-a-payout-task)
         - [Creating a multipayout task](#creating-a-multipayout-task)
         - [Checking task status](#checking-task-status)
+        - [Get crypto balance information](#get-crypto-balance-info)
   - [Receiving callback](#receiving-callback)
   - [Ready-made modules](#ready-made-modules)
      - [WHMCS](#whmcs)
@@ -67,9 +68,10 @@ https://demo.shkeeper.io/
 
 <a name="available-coins"></a>
 ## 2. Available coins
-SHKeeper offers a direct way to receive BTC, ETH, LTC, DOGE, XMR, XRP, TRX, BNB, MATIC, AVAX, USDT (ERC20, TRC20, BEP-20, Polygon, Avalanche), USDC (ERC20, TRC20, BEP-20, Polygon, Avalanche).
+SHKeeper offers a direct way to receive BTC, ETH, LTC, DOGE, XMR, XRP, TRX, BNB, SOL, MATIC, AVAX, FIRO, USDT (ERC20, TRC20, BEP-20, Polygon, Avalanche), USDC (ERC20, TRC20, BEP-20, Polygon, Avalanche).
 
-![Coins](https://github.com/user-attachments/assets/b4137f13-0018-40b1-8c25-d639235b7fc2)
+<img width="2060" height="800" alt="Group 2614" src="https://github.com/user-attachments/assets/d44d5343-cd90-473f-a63f-dd1b1b74e8c5" />
+
 <a name="features"></a>
 ## 3. Features
 
@@ -263,6 +265,26 @@ By default, when adding a transaction and calculating the amount in fiat, SHKeep
 </p>
 
 If you have set “Recalculate invoice rate” to a value other than 0, then in the case of an invoice being paid after the specified time, the exchange rate will be the one at the moment the transaction is credited. When creating an invoice in SHKeeper, an object is returned that includes the `recalculate_after` field, allowing you to inform the customer of how long the current exchange rate will be held for them.
+
+#### Static address mode (advanced)
+
+For businesses that need a permanent deposit address per customer (e.g., exchanges, custodial flows, recurring deposits), SHKeeper supports a “static address” usage pattern **without** changing the core invoice mechanics:
+
+1. **Create a “large” reusable invoice per customer and per coin.**  
+   Set an intentionally high target amount so the invoice never reaches the “fully paid” state during normal operation. This lets you reuse the **same address** for many deposits from the same customer.
+
+2. **Keep the address static by reusing the same invoice.**  
+   Each invoice in SHKeeper maps to a unique blockchain address. By reusing that invoice, you keep the deposit address unchanged for the customer.
+
+3. **Control pricing exposure with “Recalculate invoice rate after”.**  
+   Set a minimal recalculation period (e.g., 1 hour) so fiat/crypto conversion snapshots are refreshed at your cadence. Within the configured period, the rate remains fixed; after it expires, the next transactions will use the updated rate snapshot automatically.
+
+**Notes & caveats**
+
+- This approach preserves a **static deposit address** while keeping rate handling predictable via the recalculation window.  
+- Standard invoice thresholds (under/overpayment windows) and confirmations still apply.  
+- Accounting & reconciliation remain invoice-centric: you attribute multiple deposits to the same customer by keeping a dedicated invoice per customer/coin.
+
 <a name="api"></a>
 ### 5.2. API 
 <a name="auth"></a>
@@ -754,6 +776,40 @@ When the task is in progress:
     "status": "FAILURE"
 }
 ```
+
+<a name="get-crypto-balance-info"></a>
+##### 5.2.11.4. Get crypto balance information
+
+**Endpoint:** `/api/v1/<crypto_name>/balance`  
+**Authorization:** ApiKey.    
+**HTTP request method:**  GET  
+**Curl Example:**
+```
+curl --location --request GET 'https://demo.shkeeper.io/api/v1/ETH/balance' \
+--header 'X-Shkeeper-Api-Key: nApijGv8djih7ozY'
+```
+
+**Successful Response:**
+```
+{
+  "amount_crypto":"0.0213590094",
+  "amount_fiat":"88.8201590493",
+  "display_name":"Ethereum",
+  "fiat":"USD",
+  "name":"ETH",
+  "rate":"4158.44000000",
+  "server_status":"Synced"
+}
+```
+
+**Error Response:**
+```
+{
+  "message":"Crypto XRP is not enabled",
+  "status":"error"
+}
+```
+
 <a name="receiving-callback"></a>
 ### 5.3 Receiving callback
 

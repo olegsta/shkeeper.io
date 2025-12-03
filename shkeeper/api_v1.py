@@ -1,6 +1,9 @@
 from decimal import Decimal
 import traceback
 from os import environ
+from concurrent.futures import ThreadPoolExecutor
+from operator import  itemgetter
+
 
 from werkzeug.datastructures import Headers
 from flask import Blueprint, jsonify
@@ -46,18 +49,35 @@ bp = Blueprint("api_v1", __name__, url_prefix="/api/v1/")
 def list_crypto():
     filtered_list = []
     crypto_list = []
-    for crypto in Crypto.instances.values():
-        if crypto.wallet.enabled and (crypto.getstatus() != "Offline"):
-            if (not app.config.get("DISABLE_CRYPTO_WHEN_LAGS") or 
-                    (app.config.get("DISABLE_CRYPTO_WHEN_LAGS") and crypto.getstatus() == "Synced")):
-                filtered_list.append(crypto.crypto)
-                crypto_list.append(
-                    {"name": crypto.crypto, "display_name": crypto.display_name}
-                )
+    disable_on_lags = app.config.get("DISABLE_CRYPTO_WHEN_LAGS")
+    cryptos =  Crypto.instances.values()
+    filtered_cryptos = []
+
+    for crypto in cryptos:
+        if crypto.wallet.enabled:
+            filtered_cryptos.append(crypto)
+
+    def get_crypto_status(crypto):
+        return crypto, crypto.getstatus()
+
+    with ThreadPoolExecutor() as executor:
+        results = list(executor.map(get_crypto_status, filtered_cryptos))
+
+    for crypto, status in results:
+        if status == "Offline":
+            continue
+        if disable_on_lags and status != "Synced":
+            continue
+        filtered_list.append(crypto.crypto)
+        crypto_list.append({
+            "name": crypto.crypto,
+            "display_name": crypto.display_name
+        })
+
     return {
         "status": "success",
-        "crypto": filtered_list,
-        "crypto_list": crypto_list,
+        "crypto": sorted(filtered_list),
+        "crypto_list": sorted(crypto_list, key=itemgetter("name")),
     }
 
 
@@ -285,6 +305,29 @@ def status(crypto_name):
     }
 
 
+@bp.get("/<crypto_name>/balance")
+@api_key_required
+def balance(crypto_name):
+    if crypto_name not in Crypto.instances.keys():
+        return {"status": "error", 
+                "message": f"Crypto {crypto_name} is not enabled"}
+    crypto = Crypto.instances[crypto_name]
+    fiat = "USD"
+    rate = ExchangeRate.get(fiat, crypto_name)
+    current_rate = rate.get_rate()
+    crypto_amount = format_decimal(crypto.balance()) if crypto.balance() else 0
+
+    return {
+        "name": crypto.crypto,
+        "display_name": crypto.display_name,
+        "amount_crypto": crypto_amount,
+        "rate": current_rate,
+        "fiat": "USD",
+        "amount_fiat": format_decimal(Decimal(crypto_amount) * Decimal(current_rate)),
+        "server_status": crypto.getstatus(),
+    }
+
+
 @bp.post("/<crypto_name>/payout")
 @basic_auth_optional
 @login_required
@@ -397,6 +440,7 @@ def walletnotify(crypto_name, txid):
                     send_notification(tx)
             except sqlalchemy.exc.IntegrityError as e:
                 app.logger.warning(f"[{crypto.crypto}/{txid}] TX already exist in db")
+                db.session.rollback()
         return {"status": "success"}
     except NotRelatedToAnyInvoice:
         app.logger.warning(f"Transaction {txid} is not related to any invoice")
