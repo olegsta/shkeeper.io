@@ -57,7 +57,7 @@ class Crypto(abc.ABC):
             "firo",
             "firo_spark",
         ]
-        default_on = ["btc", "ltc", "doge"]
+        default_on = ["btc", "doge"]
         for symbol in default_off:
             if cls.__name__ == symbol and (
                 f"{symbol.upper()}_WALLET" not in os.environ
