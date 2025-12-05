@@ -21,6 +21,7 @@ import prometheus_client
 
 from shkeeper import db
 from shkeeper.auth import login_required, metrics_basic_auth
+from shkeeper.models import User
 from shkeeper.schemas import TronError
 from shkeeper.wallet_encryption import (
     wallet_encryption,
@@ -42,6 +43,7 @@ from shkeeper.models import (
     PayoutTxStatus,
     Wallet,
     PayoutPolicy,
+    PayoutReservePolicy,
     ExchangeRate,
     InvoiceStatus,
     Transaction,
@@ -146,6 +148,7 @@ def manage(crypto_name):
         crypto=crypto,
         pdest=pdest,
         ppolicy=[i.value for i in PayoutPolicy],
+        prespolicy = [i.value for i in PayoutReservePolicy],
         recalc=recalc,
         server_templates=server_templates,
     )
@@ -210,6 +213,14 @@ def transactions():
     )
 
 
+@bp.get("/settings")
+@login_required
+def settings():
+    """User settings page including 2FA management"""
+    user = g.user
+    return render_template("wallet/settings.j2", user=user)
+
+
 @bp.get("/parts/transactions")
 @login_required
 def parts_transactions():
@@ -222,6 +233,8 @@ def parts_transactions():
             field = getattr(Transaction, arg)
             if isinstance(field, property):
                 continue
+            elif "crypto" == arg:
+                query = query.filter(Transaction.crypto == request.args[arg])
             else:
                 query = query.filter(field.contains(request.args[arg]))
 

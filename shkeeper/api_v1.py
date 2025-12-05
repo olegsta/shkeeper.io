@@ -34,7 +34,8 @@ from shkeeper.wallet_encryption import (
     WalletEncryptionRuntimeStatus,
 )
 from shkeeper.exceptions import NotRelatedToAnyInvoice
-
+from shkeeper.services.crypto_cache import get_available_cryptos
+from shkeeper.services.balance_service import get_balances
 
 bp = Blueprint("api_v1", __name__, url_prefix="/api/v1/")
 
@@ -47,39 +48,25 @@ bp = Blueprint("api_v1", __name__, url_prefix="/api/v1/")
 
 @bp.route("/crypto")
 def list_crypto():
-    filtered_list = []
-    crypto_list = []
-    disable_on_lags = app.config.get("DISABLE_CRYPTO_WHEN_LAGS")
-    cryptos =  Crypto.instances.values()
-    filtered_cryptos = []
-
-    for crypto in cryptos:
-        if crypto.wallet.enabled:
-            filtered_cryptos.append(crypto)
-
-    def get_crypto_status(crypto):
-        return crypto, crypto.getstatus()
-
-    with ThreadPoolExecutor() as executor:
-        results = list(executor.map(get_crypto_status, filtered_cryptos))
-
-    for crypto, status in results:
-        if status == "Offline":
-            continue
-        if disable_on_lags and status != "Synced":
-            continue
-        filtered_list.append(crypto.crypto)
-        crypto_list.append({
-            "name": crypto.crypto,
-            "display_name": crypto.display_name
-        })
-
+    data = get_available_cryptos()
     return {
         "status": "success",
-        "crypto": sorted(filtered_list),
-        "crypto_list": sorted(crypto_list, key=itemgetter("name")),
+        "crypto": data["filtered"],
+        "crypto_list": data["crypto_list"],
     }
 
+@bp.get("/crypto/balances")
+@api_key_required
+def get_all_balances():
+    includes = request.args.get("includes")
+    if includes:
+        includes = includes.split(",")
+    else:
+        includes = None
+    balances, error = get_balances(includes)
+    if error:
+        return {"status": "error", "message": error}, 400
+    return balances
 
 @bp.get("/<crypto_name>/generate-address")
 @login_required
@@ -276,6 +263,9 @@ def autopayout(crypto_name):
 
     if req["policy"] not in [i.value for i in PayoutPolicy]:
         return {"status": "error", "message": f"Unknown payout policy: {req['policy']}"}
+    
+    if req["prespolicyOption"] not in [i.value for i in PayoutReservePolicy]:
+        return {"status": "error", "message": f"Unknown payout reserve policy: {req['prespolicyOption']}"}
 
     w = Wallet.query.filter_by(crypto=crypto_name).first()
     if autopayout_destination := req.get("add"):
@@ -283,6 +273,13 @@ def autopayout(crypto_name):
     if autopayout_fee := req.get("fee"):
         w.pfee = autopayout_fee
     w.ppolicy = PayoutPolicy(req["policy"])
+    w.prespolicy = PayoutReservePolicy(req["prespolicyOption"])
+    if w.prespolicy == PayoutReservePolicy.AMOUNT:
+        w.presamount = req["prespolicyValue"]
+    elif w.prespolicy == PayoutReservePolicy.PERCENT:
+        w.presamount = int(req["prespolicyValue"]) # store percent as integer
+    else:
+        w.presamount = None
     w.pcond = req["policyValue"]
     w.payout = req.get("policyStatus", True)
     w.llimit = req["partiallPaid"]

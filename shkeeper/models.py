@@ -2,10 +2,13 @@ import base64
 import codecs
 from collections import namedtuple
 import enum
+import json
+import secrets
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 import bcrypt
+import pyotp
 from flask import current_app as app
 
 from shkeeper import db
@@ -20,6 +23,10 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     passhash = db.Column(db.String(120))
     api_key = db.Column(db.String)
+    totp_secret = db.Column(db.String(64))  # Base32 encoded TOTP secret
+    totp_enabled = db.Column(db.Boolean, default=False)
+    backup_codes = db.Column(db.Text)  # JSON array of hashed backup codes
+    totp_enabled_at = db.Column(db.DateTime)
 
     @staticmethod
     def get_password_hash(password):
@@ -27,6 +34,55 @@ class User(db.Model):
 
     def verify_password(self, password):
         return bcrypt.checkpw(password.encode(), self.passhash)
+
+    def generate_totp_secret(self):
+        """Generate new TOTP secret for 2FA setup"""
+        return pyotp.random_base32()
+
+    def get_totp_uri(self):
+        """Get provisioning URI for QR code generation"""
+        if not self.totp_secret:
+            return None
+        return pyotp.totp.TOTP(self.totp_secret).provisioning_uri(
+            name=self.username, issuer_name="SHKeeper.io"
+        )
+
+    def verify_totp(self, token):
+        """Verify TOTP token from authenticator app"""
+        if not self.totp_enabled or not self.totp_secret:
+            return False
+        totp = pyotp.TOTP(self.totp_secret)
+        # Allow 1 time step before/after (30 seconds drift)
+        return totp.verify(token, valid_window=1)
+
+    def generate_backup_codes(self, count=10):
+        """Generate backup codes for emergency access"""
+        codes = [secrets.token_hex(4).upper() for _ in range(count)]
+        # Store hashed versions using bcrypt
+        hashed = [
+            bcrypt.hashpw(code.encode(), bcrypt.gensalt(rounds=12)).decode()
+            for code in codes
+        ]
+        self.backup_codes = json.dumps(hashed)
+        return codes  # Return plaintext codes for user to save
+
+    def verify_backup_code(self, code):
+        """Verify and consume a backup code (one-time use)"""
+        if not self.backup_codes:
+            return False
+        try:
+            stored = json.loads(self.backup_codes)
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+        for i, hashed in enumerate(stored):
+            if bcrypt.checkpw(code.upper().encode(), hashed.encode()):
+                # Remove used code from list
+                stored.pop(i)
+                self.backup_codes = json.dumps(stored)
+                db.session.commit()
+                return True
+        return False
 
     @classmethod
     def get_api_key(cls):
@@ -46,6 +102,11 @@ class PayoutPolicy(enum.Enum):
     MANUAL = "manual"
     SCHEDULED = "scheduled"
     LIMIT = "limit"
+
+class PayoutReservePolicy(enum.Enum):
+    DISABLE = "disable"
+    AMOUNT = "amount"
+    PERCENT = "percent"
 
 
 class Fiat:
@@ -71,6 +132,9 @@ class Wallet(db.Model):
     recalc = db.Column(db.Integer, default=0)
     confirmations = db.Column(db.Integer, default=1)
     bkey = db.Column(db.String)
+    prespolicy = db.Column(db.Enum(PayoutReservePolicy), default=PayoutReservePolicy.DISABLE)
+    presamount = db.Column(db.String)
+
 
     @classmethod
     def register_currency(cls, crypto):
@@ -95,9 +159,28 @@ class Wallet(db.Model):
 
         crypto = Crypto.instances[self.crypto]
         balance = crypto.balance()
-        res = crypto.mkpayout(
-            self.pdest, balance, self.pfee, subtract_fee_from_amount=True
-        )
+        if crypto.wallet.prespolicy == PayoutReservePolicy.DISABLE:
+            res = crypto.mkpayout(
+                self.pdest, balance, self.pfee, subtract_fee_from_amount=True
+            )
+        elif crypto.wallet.prespolicy == PayoutReservePolicy.AMOUNT:
+            should_payout = balance - Decimal(crypto.wallet.presamount)
+            if should_payout <= 0:
+                raise Exception(f"Unable to autopayout, reserved amount is bigger or equal to balance: {balance} < {crypto.wallet.presamount}")
+            else:
+                res = crypto.mkpayout(
+                    self.pdest, should_payout, self.pfee, subtract_fee_from_amount=True
+                )
+        elif crypto.wallet.prespolicy == PayoutReservePolicy.PERCENT:
+            should_payout = balance * (1 - (Decimal(crypto.wallet.presamount) / 100)) # presamount is stored as integer percent
+            res = crypto.mkpayout(
+                self.pdest, should_payout, self.pfee, subtract_fee_from_amount=True
+            )
+        else:
+            app.logger.info(f"Unexpected Autopayout Reservation Policy : {crypto.wallet.prespolicy}, possibly after upgrading, running without reservation")
+            res = crypto.mkpayout(
+                self.pdest, balance, self.pfee, subtract_fee_from_amount=True
+            )
 
         if "result" in res and res["result"]:
             idtxs = (
