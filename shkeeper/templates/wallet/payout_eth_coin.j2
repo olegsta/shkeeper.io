@@ -71,29 +71,37 @@
             <p class="ms-2">{{ crypto.crypto|upper }}</p>
           </div>
         </div>
-        {% if crypto.crypto|upper in ["BTC", "LTC"] %}
-          <div><p>Fee</p></div>
-        {% else %}
-          <div></div>
+        {% if enable_payout_callback %}
+          <div><p>Callback url:</p></div>
+          <div>
+            <div class="d-flex align-items-center">
+              <input
+                class="form-control common-text"
+                type="text"
+                id="callback-url"
+              />
+            </div>
+          </div>
         {% endif %}
+        <div><p>External ID:</p></div>
         <div>
           <div class="d-flex align-items-center">
-            {% if crypto.crypto|upper in ["BTC", "LTC"] %}
-              <input
-                class="fee-input form-control common-text"
-                id="fee-input"
-                type="text"
-                name="fee"
-              />
-              <p class="ms-2 fee-label" id="estimate-fee-btn" style="cursor: pointer; color: white;"> sat/vByte</p>
-            {% else %}
-              <input
-                value="0"
-                class="fee-input form-control common-text"
-                type="hidden"
-                name="fee"
-              />
-            {% endif %}
+            <input
+              class="form-control common-text"
+              type="text"
+              id="external-id"
+            />
+          </div>
+        </div>
+        <div><p></p></div>
+        <div>
+          <div class="d-flex align-items-center">
+            <input
+              value="0"
+              class="fee-input form-control common-text"
+              type="hidden"
+              name="fee"
+            />
             <p class="ms-2"></p>
           </div>
         </div>
@@ -139,41 +147,33 @@
     }
   }
 
-  document.addEventListener("DOMContentLoaded", function() {
-    const cryptoName = "{{ crypto.crypto|upper }}";
-
-    if (cryptoName === "BTC" || cryptoName === "LTC") {
-      const feeLabel = document.querySelector(".fee-label");
-      if (feeLabel) {
-        feeLabel.style.cursor = "pointer";
-        feeLabel.addEventListener("click", function() {
-          show_est_fee(cryptoName);
-        });
-      }
-    }
-  });
-
-  function show_est_fee(crypto) {
-    const feeInput = document.querySelector("#fee-input");
-    if (!feeInput) return;
-
-    const amount = feeInput.value || "1";
-
-    fetch(`/api/v1/${crypto}/estimate-tx-fee/${amount}`)
+  function show_est_fee() {
+    let amount = document.querySelector(".fee-input").value;
+    if (!amount) return;
+    fetch("/api/v1/{{crypto.crypto}}/estimate-tx-fee/" + amount)
       .then(response => response.json())
       .then(data => {
-        if (!data.fee_satoshi) return;
-
-        const feeSatoshi = data.fee_satoshi;
-        feeInput.value = feeSatoshi;
-        const estFee = document.querySelector("#est_fee");
-        if (estFee) estFee.innerText = feeSatoshi;
-
-        if (typeof check_fee === "function") check_fee();
+        if (!data.fee) return;
+        document.querySelector("#est_fee").innerText = data.fee;
+        check_fee();
+        console.log(data);
       })
-      .catch(err => console.error("error:", err));
   }
-
+  function validateCallback(element) {
+    if (!element || !element.value.trim()) {
+        element?.classList.remove("red-highlight");
+        return null;
+    }
+    element.value = element.value.trim();
+    if (element.value.startsWith("http://") || element.value.startsWith("https://")) {
+        element.classList.remove("red-highlight");
+        return element.value;
+    } else {
+        element.classList.add("red-highlight");
+        alert("Invalid Callback URL! Must start with http:// or https://");
+        return false;
+    }
+  }
   var not_en_trx_msg = `Not enough {{ crypto.network_currency }} to pay for transaction. Please top up the fee-deposit account.`;
 
   function check_fee() {
@@ -198,10 +198,12 @@
     document.tx_complete = false;
 
     let addr = document.querySelector("#paddress").value.trim();
-    let amount = document.querySelector(".fee-input").value;
-    let feeInput = document.querySelector("#fee-input");
-    let fee = feeInput ? feeInput.value : 0;
+    let callbackUrl = validateCallback(document.getElementById("callback-url"));
+    if (callbackUrl === false) return;
+    let elExternalId = document.querySelector("#external-id");
+    let externalIdVal = elExternalId ? elExternalId.value : null;
 
+    let amount = document.querySelector(".fee-input").value;
     if (!amount) {
       alert('Please enter amount to send.');
       return;
@@ -213,7 +215,6 @@
     } #}
 
     tx_progress_on();
-
     fetch("/api/v1/{{crypto.crypto}}/payout", {
       method: 'POST',
       headers: {
@@ -223,13 +224,20 @@
       body: JSON.stringify({
         destination: addr,
         amount: amount,
-        fee: fee,
+        callback_url: callbackUrl,
+        external_id: externalIdVal,
+        fee: 0,
       })
     })
       .then(response => response.json())
       .then(data => {
         console.log(data);
-        get_task(data.task_id);
+        if (data.task_id) {
+          get_task(data.task_id);
+        } else if (data.status === "error") {
+          alert(`Failure!\n\n${data.message}`);
+          location.reload();
+        }
       })
 
     console.log('submit!')
