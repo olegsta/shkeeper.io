@@ -225,6 +225,33 @@ def payment_gateway_set_token(crypto_name):
     return {"status": "success"}
 
 
+@bp.get("/settings/<string:key>")
+@login_required
+def get_setting(key):
+    app.logger.warning(f"Getting setting {key}")
+    setting = Setting.query.get(key)
+    return {
+        "status": "success",
+        "key": key,
+        "value": setting.value if setting else None
+    }
+
+@bp.post("/settings/<string:key>")
+@login_required
+def set_setting(key):
+    data = request.json or {}
+    value = data.get("value")
+    if value is None:
+        return {"status": "error", "message": "value required"}, 400
+    setting = Setting.query.get(key)
+    if not setting:
+        setting = Setting(name=key, value=str(value))
+        db.session.add(setting)
+    else:
+        setting.value = str(value)
+    db.session.commit()
+    return {"status": "success"}
+
 @bp.post("/<crypto_name>/transaction")
 @login_required
 def add_transaction(crypto_name):
