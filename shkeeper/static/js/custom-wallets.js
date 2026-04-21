@@ -83,7 +83,6 @@ function handleNetworkBanner() {
 
 function runBannerLogic(banner, closeBtn) {
    const triggerNetworks = [
-    "BTC",
     "ETH-USDT",
     "ETH-USDC",
     "ETH-PYUSD",
@@ -110,6 +109,8 @@ function runBannerLogic(banner, closeBtn) {
 
     document.querySelectorAll(".coin-amount-value").forEach(wallet => {
         let crypto = wallet.id.toUpperCase();
+        console.log("Checking wallet:", crypto);
+        console.log("triggerNetworks:", triggerNetworks);
 
         if (triggerNetworks.some(n => crypto.includes(n))) {
             shouldShow = true;
