@@ -368,6 +368,16 @@ def list():
     """Shows list of transaction notifications to be sent"""
     list_unconfirmed()
 
+# @bp.cli.command("export-openapi")
+# @click.option("--output", default="static/openapi/openapi.json")
+# def export_openapi(output):
+#     import json
+#     import os
+#     from flask import current_app
+#     os.makedirs(os.path.dirname(output), exist_ok=True)
+#     with open(output, "w") as f:
+#         json.dump(current_app.openapi(), f, indent=2)
+#     print(f"OpenAPI exported to {output}")
 
 @bp.cli.command()
 def send():
