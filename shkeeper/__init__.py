@@ -98,6 +98,7 @@ def create_app(test_config=None):
     )
 
     api = Api(app)
+    api = app.extensions["smorest"]
 
     for name, scheme in sc.SECURITY_SCHEMES.items():
         api.spec.components.security_scheme(name, scheme)
