@@ -368,7 +368,6 @@ def list():
     """Shows list of transaction notifications to be sent"""
     list_unconfirmed()
 
-
 @bp.cli.command()
 def send():
     """Send transaction notification"""
