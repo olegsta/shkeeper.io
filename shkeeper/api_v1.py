@@ -235,8 +235,13 @@ def payment_gateway_set_status(crypto_name):
     require_admin()
     req = request.get_json(force=True)
     crypto = Crypto.instances[crypto_name]
-    crypto.wallet.enabled = req["enabled"]
+    enabled = bool(req["enabled"])
+    crypto.wallet.enabled = enabled
     db.session.commit()
+    if enabled:
+        from shkeeper.services.store_service import provision_crypto_for_all_stores
+
+        provision_crypto_for_all_stores(crypto_name)
     return {"status": "success"}
 
 
