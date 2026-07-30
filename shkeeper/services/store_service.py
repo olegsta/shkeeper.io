@@ -401,9 +401,6 @@ def _reconcile_store_fda_addresses(store: Store):
         db.session.commit()
 
 
-reconcile_store_fda_addresses = _reconcile_store_fda_addresses
-
-
 def get_store_wallet(store: Store, crypto_name: str):
     return StoreWallet.query.filter_by(store_id=store.id, crypto=crypto_name).first()
 
