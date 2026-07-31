@@ -777,14 +777,74 @@ class Transaction(db.Model):
         else:
             return self.invoice.addr
 
+    @staticmethod
+    def resolve_outgoing_store_id(crypto_name, txid, addr=None):
+        """Resolution order:
+        1. PayoutTx.txid → Payout.store_id (registered payouts)
+        2. StoreWallet.fda_address matching addr (ETH-like send reports from/FDA)
+        3. Invoice / InvoiceAddress matching addr (token-drain send-from-invoice)
+        """
+        ptx = (
+            PayoutTx.query.filter_by(txid=txid)
+            .order_by(PayoutTx.id.desc())
+            .first()
+        )
+        if ptx and ptx.payout and ptx.payout.store_id:
+            return ptx.payout.store_id
+
+        if addr:
+            addr_l = addr.lower()
+            wallets = StoreWallet.query.filter(
+                StoreWallet.fda_address.isnot(None),
+            ).all()
+            for sw in wallets:
+                if not sw.fda_address or sw.fda_address.lower() != addr_l:
+                    continue
+                if sw.crypto == crypto_name:
+                    return sw.store_id
+            for sw in wallets:
+                if sw.fda_address and sw.fda_address.lower() == addr_l:
+                    return sw.store_id
+
+            # Token drains / 0-value contract calls report the invoice address as from.
+            inv_addr = (
+                InvoiceAddress.query.filter(
+                    db.func.lower(InvoiceAddress.addr) == addr_l
+                )
+                .order_by(InvoiceAddress.id.desc())
+                .first()
+            )
+            if inv_addr:
+                inv = Invoice.query.get(inv_addr.invoice_id)
+                if inv and inv.store_id:
+                    return inv.store_id
+
+            inv = (
+                Invoice.query.filter(
+                    db.func.lower(Invoice.addr) == addr_l,
+                    Invoice.status != InvoiceStatus.OUTGOING,
+                    Invoice.store_id.isnot(None),
+                )
+                .order_by(Invoice.id.desc())
+                .first()
+            )
+            if inv:
+                return inv.store_id
+
+        return None
+
     @classmethod
     def add_outgoing(cls, crypto, txid):
         for addr, amount, _, _ in crypto.getaddrbytx(txid):
             existed_tx = Transaction.query.filter_by(txid=txid).first()
 
             if not existed_tx:
+                store_id = cls.resolve_outgoing_store_id(crypto.crypto, txid, addr)
                 payout_invoice = Invoice(
-                    addr=addr, fiat="USD", status=InvoiceStatus.OUTGOING
+                    addr=addr,
+                    fiat="USD",
+                    status=InvoiceStatus.OUTGOING,
+                    store_id=store_id,
                 )
                 db.session.add(payout_invoice)
                 db.session.commit()
