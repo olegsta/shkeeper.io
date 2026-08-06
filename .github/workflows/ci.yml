@@ -51,7 +51,9 @@ jobs:
           files: static/openapi/openapi.json
           fail_on_unmatched_files: false
 
+  # TEMP: docker disabled to test multiskipper trigger — revert this block later
   docker:
+    if: false
     runs-on: ubuntu-latest
     needs: build-openapi
 
@@ -83,7 +85,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
 
+  # TEMP: skipped while docker is disabled — revert later
   trigger-docs:
+    if: false
     runs-on: ubuntu-latest
     needs: docker
 
@@ -104,9 +108,10 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"event_type\":\"build-docs\",\"client_payload\":{\"tag\":\"${GITHUB_REF_NAME}\"}}"
 
+  # TEMP: needs build-openapi instead of docker — restore `needs: docker` later
   trigger-multiskipper:
     runs-on: ubuntu-latest
-    needs: docker
+    needs: build-openapi
 
     steps:
       - name: Generate GitHub App token
