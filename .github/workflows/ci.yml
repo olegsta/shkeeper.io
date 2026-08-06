@@ -124,8 +124,18 @@ jobs:
       # change `olegsta` to `vsys-host` if you want to trigger the multiskipper build in the main repo instead of your fork
       - name: Trigger multiskipper build
         run: |
-          curl -X POST https://api.github.com/repos/olegsta/shkeeper-multiskipper_private/dispatches \
+          set -euo pipefail
+          HTTP_CODE=$(curl -sS -o /tmp/dispatch-response.txt -w "%{http_code}" \
+            -X POST "https://api.github.com/repos/olegsta/shkeeper-multiskipper_private/dispatches" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d "{\"event_type\":\"build-multiskipper\",\"client_payload\":{\"tag\":\"${GITHUB_REF_NAME}\"}}"
+            -d "{\"event_type\":\"build-multiskipper\",\"client_payload\":{\"tag\":\"${GITHUB_REF_NAME}\"}}")
+          echo "HTTP ${HTTP_CODE}"
+          cat /tmp/dispatch-response.txt || true
+          # GitHub returns 204 No Content on success
+          if [ "$HTTP_CODE" != "204" ]; then
+            echo "repository_dispatch failed" >&2
+            exit 1
+          fi
+          echo "Dispatched build-multiskipper for tag ${GITHUB_REF_NAME}"
