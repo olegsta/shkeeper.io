@@ -108,10 +108,9 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"event_type\":\"build-docs\",\"client_payload\":{\"tag\":\"${GITHUB_REF_NAME}\"}}"
 
-  # TEMP: needs build-openapi instead of docker — restore `needs: docker` later
+  # TEMP: no needs — restore `needs: docker` later
   trigger-multiskipper:
     runs-on: ubuntu-latest
-    needs: build-openapi
 
     steps:
       - name: Generate GitHub App token
