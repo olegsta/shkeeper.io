@@ -124,13 +124,14 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: vsys-host
+          owner: olegsta
+          repositories: shkeeper-multiskipper_private
 
       - name: Trigger multiskipper build
         run: |
           set -euo pipefail
           HTTP_CODE=$(curl -sS -o /tmp/dispatch-response.txt -w "%{http_code}" \
-            -X POST "https://api.github.com/repos/vsys-host/shkeeper-multiskipper/dispatches" \
+            -X POST "https://api.github.com/repos/olegsta/shkeeper-multiskipper_private/dispatches" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
             -H "Content-Type: application/json" \
