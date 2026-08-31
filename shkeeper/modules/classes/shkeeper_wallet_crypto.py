@@ -3,7 +3,6 @@ import datetime
 import json
 from collections import namedtuple
 from decimal import Decimal
-from os import environ
 
 from flask import current_app as app
 
@@ -31,11 +30,15 @@ class UtxoLikeWalletCrypto(Crypto):
         return self.env_prefix
 
     def gethost(self):
+        from os import environ
+
         host = environ.get(f"{self.env_prefix}_API_SERVER_HOST", self.default_host)
         port = environ.get(f"{self.env_prefix}_SERVER_PORT", self.default_port)
         return f"{host}:{port}"
 
     def get_auth_creds(self):
+        from os import environ
+
         username = environ.get(f"{self.env_prefix}_USERNAME", "shkeeper")
         password = environ.get(f"{self.env_prefix}_PASSWORD", "shkeeper")
         return (username, password)
@@ -50,19 +53,44 @@ class UtxoLikeWalletCrypto(Crypto):
             **kwargs,
         ).json(parse_float=Decimal)
 
+    def _store_payload(self, store_id=None):
+        return {"store_id": int(store_id) if store_id is not None else 1}
+
     def estimate_tx_fee(self, amount, **kwargs):
-        return self._api_post(f"calc-tx-fee/{amount}")
+        return self._api_post(
+            f"calc-tx-fee/{amount}",
+            json=self._store_payload(store_id=kwargs.get("store_id")),
+        )
 
     @property
     def fee_deposit_account(self):
-        response = self._api_post("fee-deposit-account")
+        # UTXO has no FDA; return store balance + first address for UI compatibility.
+        return self.fee_deposit_account_for()
 
+    def fee_deposit_account_for(self, store_id=None):
+        response = self._api_post(
+            "fee-deposit-account",
+            json=self._store_payload(store_id=store_id),
+        )
         FeeDepositAccount = namedtuple("FeeDepositAccount", "addr balance")
-        return FeeDepositAccount(response["account"], Decimal(response["balance"]))
+        return FeeDepositAccount(
+            response.get("account") or "",
+            Decimal(response.get("balance") or 0),
+        )
 
-    def balance(self):
+    def create_fee_deposit_account(self, store_id=None):
+        # No FDA for UTXO. Provisioning just ensures the store has at least one address.
+        return self.mkaddr(store_id=store_id)
+
+    def balance(self, store_id=None):
+        return self.balance_for_account(store_id=store_id)
+
+    def balance_for_account(self, store_id=None):
         try:
-            response = self._api_post("balance")
+            response = self._api_post(
+                "balance",
+                json=self._store_payload(store_id=store_id),
+            )
             balance = response["balance"]
         except Exception as e:
             app.logger.warning(f"Error: {e}")
@@ -75,7 +103,7 @@ class UtxoLikeWalletCrypto(Crypto):
         _, _, confirmations, _ = transactions[0]
         return confirmations
 
-    def get_task(self, id):
+    def get_task(self, id, store_id=None):
         return self._api_post(f"task/{id}")
 
     def getstatus(self):
@@ -89,7 +117,19 @@ class UtxoLikeWalletCrypto(Crypto):
             return "Offline"
 
     def mkaddr(self, **kwargs):
-        response = self._api_post("generate-address")
+        store_id = kwargs.get("store_id")
+        response = self._api_post(
+            "generate-address",
+            json=self._store_payload(store_id=store_id),
+        )
+        if response.get("status") == "error" or "address" not in response:
+            msg = response.get("msg") or response.get("message") or str(response)
+            if "password" in msg.lower() or "shkeeper" in msg.lower():
+                raise RuntimeError(
+                    "Wallet encryption is locked. Ask the admin to unlock it at /unlock "
+                    "or via POST /api/v1/decryption-key before creating payment addresses."
+                )
+            raise RuntimeError(f"Failed to generate address: {msg}")
         return response["address"]
 
     def getaddrbytx(self, tx):
@@ -100,8 +140,39 @@ class UtxoLikeWalletCrypto(Crypto):
             result.append([address, Decimal(amount), confirmations, category])
         return result
 
-    def dump_wallet(self):
-        response = self._api_post("dump")
+    def dump_wallet(self, store_id=None):
+        if store_id is None:
+            from shkeeper.models import StoreWallet
+
+            store_ids = {1}
+            store_ids.update(
+                sw.store_id
+                for sw in StoreWallet.query.filter_by(crypto=self.crypto).all()
+                if sw.store_id
+            )
+            merged = {}
+            errors = []
+            for sid in sorted(store_ids):
+                part = self._api_post(
+                    "dump",
+                    json=self._store_payload(store_id=sid),
+                    timeout=60,
+                )
+                if not isinstance(part, dict) or part.get("status") == "error":
+                    errors.append(f"store_id={sid}: {part}")
+                    continue
+                merged.update(part)
+            if errors:
+                raise RuntimeError(
+                    f"Wallet dump failed for {self.crypto}: " + "; ".join(errors)
+                )
+            response = merged
+        else:
+            response = self._api_post(
+                "dump",
+                json=self._store_payload(store_id=store_id),
+                timeout=60,
+            )
         now = datetime.datetime.now().strftime("%F_%T")
         filename = f"{now}_{self.crypto}_shkeeper_wallet.json"
         content = json.dumps(response, indent=4)
@@ -110,24 +181,38 @@ class UtxoLikeWalletCrypto(Crypto):
     def create_wallet(self, *args, **kwargs):
         return {"error": None}
 
-    def mkpayout(self, destination, amount, fee, subtract_fee_from_amount=False):
+    def mkpayout(self, destination, amount, fee, subtract_fee_from_amount=False, store_id=None):
         if self.crypto == self.network_currency and subtract_fee_from_amount:
-            fee = Decimal(self.estimate_tx_fee(amount)["fee"])
-            if fee >= amount:
+            fee_coin = Decimal(self.estimate_tx_fee(amount, store_id=store_id)["fee"]) / Decimal(100_000_000)
+            if fee_coin >= amount:
                 return (
-                    f"Payout failed: not enought {self.network_currency} to pay for "
-                    f"transaction. Need {fee}, balance {amount}"
+                    f"Payout failed: not enough {self.network_currency} to pay for "
+                    f"transaction. Need {fee_coin}, balance {amount}"
                 )
-            amount -= fee
+            amount -= fee_coin
         current_fee = (
             fee
             if fee not in (None, 0, 0.0, "0", "")
-            else self.estimate_tx_fee(amount)["fee_satoshi"]
+            else self.estimate_tx_fee(amount, store_id=store_id)["fee_satoshi"]
         )
-        return self._api_post(f"payout/{destination}/{amount}/{current_fee}")
+        payload = {"store_id": int(store_id) if store_id is not None else 1}
+        return self._api_post(
+            f"payout/{destination}/{amount}/{current_fee}",
+            json=payload,
+        )
 
-    def multipayout(self, payout_list):
-        return self._api_post("multipayout", json=payout_list)
+    def multipayout(self, payout_list, store_id=None):
+        serializable_payouts = []
+        for item in payout_list:
+            entry = dict(item)
+            if "amount" in entry and isinstance(entry["amount"], Decimal):
+                entry["amount"] = str(entry["amount"])
+            serializable_payouts.append(entry)
+        payload = {
+            "payouts": serializable_payouts,
+            "store_id": int(store_id) if store_id is not None else 1,
+        }
+        return self._api_post("multipayout", json=payload)
 
     def metrics(self):
         host = str(self.gethost())
@@ -153,6 +238,8 @@ class UtxoLikeWalletCrypto(Crypto):
             )
             return error_text
 
-    def get_all_addresses(self):
-        return self._api_post("get_all_addresses")
-
+    def get_all_addresses(self, store_id=None):
+        return self._api_post(
+            "get_all_addresses",
+            json=self._store_payload(store_id=store_id),
+        )

@@ -218,8 +218,8 @@ class PayoutService:
                 ],
             )
             if len(expanded) > 1:
-                # ETH has no Bitcoin-style atomic sendmany; sidecar sends one tx per
-                # destination from the same FDA in a single multipayout task.
+                # BTC/LTC/DOGE: one on-chain tx with all outputs (sendmany).
+                # ETH/Tron: one sidecar multipayout task, still one chain tx per dest.
                 return cls.multiple_payout(
                     crypto_name,
                     expanded,
