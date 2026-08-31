@@ -14,6 +14,7 @@ from flask import current_app as app, has_app_context
 from shkeeper import db
 from shkeeper.modules.classes.rate_source import RateSource
 from shkeeper.modules.classes.crypto import Crypto
+from shkeeper.services.multistore import autopayout_store_kwargs
 from .utils import format_decimal, remove_exponent
 from .exceptions import NotRelatedToAnyInvoice
 
@@ -278,11 +279,9 @@ class Wallet(db.Model):
         db.session.commit()
 
         crypto = Crypto.instances[self.crypto]
-        # Multistore ETH*: pay only from admin/default FDA (store_id=1), never merchant FDAs.
-        payout_kwargs = {}
-        balance_kwargs = {}
+        store_kwargs = autopayout_store_kwargs(self.crypto)
 
-        balance = crypto.balance(**balance_kwargs)
+        balance = crypto.balance(**store_kwargs)
         payout_amount = balance
         if crypto.wallet.prespolicy == PayoutReservePolicy.DISABLE:
             payout_amount = balance
@@ -323,12 +322,13 @@ class Wallet(db.Model):
             payout_amount,
             self.pfee,
             subtract_fee_from_amount=True,
-            **payout_kwargs,
+            **store_kwargs,
         )
         Payout.register_from_mkpayout(
             res,
             {"dest": self.pdest, "amount": payout_amount},
             self.crypto,
+            store_id=store_kwargs.get("store_id"),
         )
         return res
 
@@ -1017,7 +1017,7 @@ class Payout(db.Model):
         return p
 
     @classmethod
-    def register_from_mkpayout(cls, res, payout, crypto, external_id=None):
+    def register_from_mkpayout(cls, res, payout, crypto, external_id=None, store_id=None):
         dest = payout["dest"]
         amount = payout["amount"]
         callback_url = payout.get("callback_url")
@@ -1061,6 +1061,7 @@ class Payout(db.Model):
                     crypto,
                     task_id=task_id,
                     external_id=external_id,
+                    store_id=store_id,
                 )
             app.logger.warning(
                 f"[register_from_mkpayout] dict without error/task_id/result -> no record {log_ctx} res={res}"

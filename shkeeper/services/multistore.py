@@ -32,6 +32,10 @@ MULTISTORE_SUPPORTED = frozenset(
         "TRX",
         "USDT",
         "USDC",
+        # Bitcoin-like
+        "BTC",
+        "LTC",
+        "DOGE",
     }
 )
 
@@ -40,6 +44,25 @@ DEFAULT_STORE_NAME = "Default"
 
 def crypto_supports_multistore(crypto_name: str) -> bool:
     return crypto_name in MULTISTORE_SUPPORTED
+
+
+def autopayout_store_kwargs(crypto_name: str) -> dict:
+    """Autopayout uses the default admin store, and only on multistore coins."""
+    if not crypto_supports_multistore(crypto_name):
+        return {}
+    from shkeeper.services.store_service import DEFAULT_ADMIN_STORE_ID
+
+    return {"store_id": DEFAULT_ADMIN_STORE_ID}
+
+
+def is_multistore_backend(crypto) -> bool:
+    if crypto is None:
+        return False
+    from shkeeper.modules.classes.ethereum import Ethereum
+    from shkeeper.modules.classes.shkeeper_wallet_crypto import UtxoLikeWalletCrypto
+    from shkeeper.modules.classes.tron_token import TronToken
+
+    return isinstance(crypto, (Ethereum, TronToken, UtxoLikeWalletCrypto))
 
 
 def filter_multistore_cryptos(crypto_names):
