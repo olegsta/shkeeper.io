@@ -240,10 +240,16 @@ class TestWalletDoPayout(_AppContextTestCase):
 
         wallet.do_payout()
 
+        crypto.balance.assert_called_with(store_id=1)
         crypto.mkpayout.assert_called_once_with(
-            "0xdest", Decimal("7"), "0.001", subtract_fee_from_amount=True
+            "0xdest",
+            Decimal("7"),
+            "0.001",
+            subtract_fee_from_amount=True,
+            store_id=1,
         )
         self.assertEqual(self.register.call_args.args[1]["amount"], Decimal("7"))
+        self.assertEqual(self.register.call_args.kwargs.get("store_id"), 1)
 
     def test_percent_policy_records_should_payout_amount(self) -> None:
         from shkeeper.models import PayoutReservePolicy
@@ -259,10 +265,16 @@ class TestWalletDoPayout(_AppContextTestCase):
 
         wallet.do_payout()
 
+        crypto.balance.assert_called_with(store_id=1)
         crypto.mkpayout.assert_called_once_with(
-            "0xdest", Decimal("8"), "0.001", subtract_fee_from_amount=True
+            "0xdest",
+            Decimal("8"),
+            "0.001",
+            subtract_fee_from_amount=True,
+            store_id=1,
         )
         self.assertEqual(self.register.call_args.args[1]["amount"], Decimal("8"))
+        self.assertEqual(self.register.call_args.kwargs.get("store_id"), 1)
 
 
 if __name__ == "__main__":

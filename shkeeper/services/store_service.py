@@ -16,12 +16,11 @@ from shkeeper.models import (
     Wallet,
 )
 from shkeeper.modules.classes.crypto import Crypto
-from shkeeper.modules.classes.ethereum import Ethereum
-from shkeeper.modules.classes.tron_token import TronToken
 from shkeeper.services.multistore import (
     DEFAULT_STORE_NAME,
     crypto_supports_multistore,
     filter_multistore_cryptos,
+    is_multistore_backend,
 )
 
 DEFAULT_ADMIN_STORE_ID = 1
@@ -80,7 +79,7 @@ def _link_default_store_wallets(store: Store) -> bool:
     changed = False
     for crypto_name in filter_multistore_cryptos(Crypto.instances.keys()):
         crypto = Crypto.instances.get(crypto_name)
-        if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
+        if not is_multistore_backend(crypto):
             continue
         sw = StoreWallet.query.filter_by(store_id=store.id, crypto=crypto_name).first()
         if sw and sw.status == StoreWalletStatus.READY and sw.fda_address:
@@ -94,8 +93,18 @@ def _link_default_store_wallets(store: Store) -> bool:
             db.session.add(sw)
             changed = True
         try:
-            fda = crypto.fee_deposit_account_for(store_id=store.id)
-            sw.fda_address = fda.addr
+            from shkeeper.modules.classes.shkeeper_wallet_crypto import (
+                UtxoLikeWalletCrypto,
+            )
+
+            if isinstance(crypto, UtxoLikeWalletCrypto):
+                # No FDA: StoreWallet.fda_address is just a provision marker
+                # (first address belonging to the store).
+                info = crypto.fee_deposit_account_for(store_id=store.id)
+                address = info.addr or crypto.mkaddr(store_id=store.id)
+            else:
+                address = crypto.fee_deposit_account_for(store_id=store.id).addr
+            sw.fda_address = address
             sw.status = StoreWalletStatus.READY
             sw.last_error = None
             changed = True
@@ -176,7 +185,7 @@ def provision_store_wallets(store: Store, cryptos=None):
         if not crypto_supports_multistore(crypto_name):
             continue
         crypto = Crypto.instances.get(crypto_name)
-        if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
+        if not is_multistore_backend(crypto):
             continue
         target_networks.add(crypto.network_currency)
         sw = StoreWallet.query.filter_by(store_id=store.id, crypto=crypto_name).first()
@@ -193,7 +202,7 @@ def provision_store_wallets(store: Store, cryptos=None):
     by_network = {}
     for sw in StoreWallet.query.filter_by(store_id=store.id).all():
         crypto = Crypto.instances.get(sw.crypto)
-        if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
+        if not is_multistore_backend(crypto):
             continue
         if crypto.network_currency not in target_networks:
             continue
@@ -223,7 +232,7 @@ def provision_crypto_for_all_stores(crypto_name: str):
     if not crypto_supports_multistore(crypto_name):
         return
     crypto = Crypto.instances.get(crypto_name)
-    if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
+    if not is_multistore_backend(crypto):
         return
 
     # Default store FDA uses store_id=1 (same as Store.id).
@@ -241,7 +250,7 @@ def provision_crypto_for_all_stores(crypto_name: str):
         name
         for name in filter_multistore_cryptos(Crypto.instances.keys())
         if Crypto.instances.get(name)
-        and isinstance(Crypto.instances[name], (Ethereum, TronToken))
+        and is_multistore_backend(Crypto.instances[name])
         and Crypto.instances[name].network_currency == crypto.network_currency
     ]
     for store in stores:
@@ -281,8 +290,8 @@ def retry_provisioning(store: Store, crypto_name: str):
     """Retry FDA provisioning for one crypto — one FDA per store per network."""
     sw = StoreWallet.query.filter_by(store_id=store.id, crypto=crypto_name).first_or_404()
     crypto = Crypto.instances.get(crypto_name)
-    if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
-        raise ValueError(f"{crypto_name} is not an ethereum-like crypto")
+    if not is_multistore_backend(crypto):
+        raise ValueError(f"{crypto_name} does not support multistore")
 
     sw.status = StoreWalletStatus.PENDING
     sw.last_error = None
@@ -294,7 +303,7 @@ def retry_provisioning(store: Store, crypto_name: str):
         other_crypto = Crypto.instances.get(other.crypto)
         if (
             other_crypto
-            and isinstance(other_crypto, (Ethereum, TronToken))
+            and is_multistore_backend(other_crypto)
             and other_crypto.network_currency == crypto.network_currency
         ):
             other.status = StoreWalletStatus.PENDING
@@ -335,7 +344,7 @@ def _provision_network(store: Store, network: str, items):
             if (
                 other.fda_address
                 and other_crypto
-                and isinstance(other_crypto, (Ethereum, TronToken))
+                and is_multistore_backend(other_crypto)
                 and other_crypto.network_currency == network
             ):
                 existing_addr = other.fda_address
@@ -344,7 +353,13 @@ def _provision_network(store: Store, network: str, items):
     if existing_addr:
         address = existing_addr
     else:
-        address = crypto.create_fee_deposit_account(store_id=store.id)
+        from shkeeper.modules.classes.shkeeper_wallet_crypto import UtxoLikeWalletCrypto
+
+        if isinstance(crypto, UtxoLikeWalletCrypto):
+            # No FDA for UTXO — generate the first store address as provision marker.
+            address = crypto.mkaddr(store_id=store.id)
+        else:
+            address = crypto.create_fee_deposit_account(store_id=store.id)
 
     for sw, _ in items:
         sw.fda_address = address
@@ -358,7 +373,7 @@ def _reconcile_store_fda_addresses(store: Store):
     by_network = {}
     for sw in StoreWallet.query.filter_by(store_id=store.id).all():
         crypto = Crypto.instances.get(sw.crypto)
-        if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
+        if not is_multistore_backend(crypto):
             continue
         network = crypto.network_currency
         by_network.setdefault(network, []).append((sw, crypto))
@@ -390,7 +405,7 @@ def get_store_wallet(store: Store, crypto_name: str):
 
 def store_wallet_balance(store: Store, crypto_name: str, sw: StoreWallet = None):
     crypto = Crypto.instances.get(crypto_name)
-    if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
+    if not is_multistore_backend(crypto):
         return None
 
     sw = sw or get_store_wallet(store, crypto_name)
@@ -424,7 +439,7 @@ def store_balances_map(stores, crypto_names):
         for crypto_name in crypto_names:
             sw = wallet_by_key.get((store.id, crypto_name))
             crypto = Crypto.instances.get(crypto_name)
-            if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
+            if not is_multistore_backend(crypto):
                 continue
             if (sw and sw.fda_address) or (
                 store.is_default and crypto.crypto == crypto.network_currency
@@ -511,6 +526,26 @@ def _is_valid_eth_address(address: str) -> bool:
         return False
 
 
+def _is_valid_utxo_address(address: str) -> bool:
+    if not address:
+        return False
+    if address[0] in ("1", "3", "m", "n", "2", "L", "M", "9", "A") and 26 <= len(address) <= 35:
+        return True
+    lowered = address.lower()
+    if lowered.startswith(("bc1", "tb1", "bcrt1", "ltc1", "tltc1", "doge1")) and 14 <= len(address) <= 90:
+        return True
+    return False
+
+
+def _is_valid_address_for_crypto(crypto_name: str, address: str) -> bool:
+    from shkeeper.modules.classes.shkeeper_wallet_crypto import UtxoLikeWalletCrypto
+
+    crypto = Crypto.instances.get(crypto_name)
+    if isinstance(crypto, UtxoLikeWalletCrypto):
+        return _is_valid_utxo_address(address)
+    return _is_valid_eth_address(address)
+
+
 def _known_fda_addresses(crypto_name: str) -> set[str]:
     """FDA addresses known to shkeeper for this crypto (DB + default sidecar FDA)."""
     addrs = {
@@ -522,7 +557,7 @@ def _known_fda_addresses(crypto_name: str) -> set[str]:
         if sw.fda_address
     }
     crypto = Crypto.instances.get(crypto_name)
-    if crypto and isinstance(crypto, (Ethereum, TronToken)):
+    if is_multistore_backend(crypto):
         try:
             fda = crypto.fee_deposit_account_for(store_id=1)
             if fda and fda.addr:
@@ -539,7 +574,7 @@ def _known_fda_addresses(crypto_name: str) -> set[str]:
 def _sidecar_managed_addresses(crypto_name: str) -> set[str]:
     """All addresses tracked by the ethereum-like sidecar for this crypto."""
     crypto = Crypto.instances.get(crypto_name)
-    if not crypto or not isinstance(crypto, (Ethereum, TronToken)):
+    if not is_multistore_backend(crypto):
         return set()
     store_ids = {1}
     store_ids.update(
@@ -566,8 +601,8 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
     address = (address or "").strip() or None
     if not address:
         return None
-    if not _is_valid_eth_address(address):
-        raise ValueError(f"Invalid Ethereum address: {address}")
+    if not _is_valid_address_for_crypto(crypto_name, address):
+        raise ValueError(f"Invalid address for {crypto_name}: {address}")
 
     lower = address.lower()
     if lower in _known_fda_addresses(crypto_name):
