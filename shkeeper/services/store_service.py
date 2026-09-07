@@ -501,6 +501,25 @@ def fee_collection_setting_name(crypto_name: str) -> str:
     return f"fee_collection_{crypto_name}"
 
 
+_TRON_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_TRON_MULTISTORE = frozenset({"TRX", "USDT", "USDC"})
+
+
+def _is_tron_like(crypto_name: str) -> bool:
+    crypto = Crypto.instances.get(crypto_name)
+    if crypto is not None:
+        return isinstance(crypto, TronToken)
+    return crypto_name in _TRON_MULTISTORE
+
+
+def _address_key(crypto_name: str, address: str) -> str:
+    """Compare-key for fee-collection addresses. Tron is case-sensitive (base58)."""
+    address = (address or "").strip()
+    if _is_tron_like(crypto_name):
+        return address
+    return address.lower()
+
+
 def _is_valid_eth_address(address: str) -> bool:
     if not address or not address.startswith(("0x", "0X")) or len(address) != 42:
         return False
@@ -511,10 +530,22 @@ def _is_valid_eth_address(address: str) -> bool:
         return False
 
 
+def _is_valid_tron_address(address: str) -> bool:
+    if not address or len(address) != 34 or not address.startswith("T"):
+        return False
+    return all(ch in _TRON_B58_ALPHABET for ch in address)
+
+
+def _is_valid_fee_collection_format(crypto_name: str, address: str) -> bool:
+    if _is_tron_like(crypto_name):
+        return _is_valid_tron_address(address)
+    return _is_valid_eth_address(address)
+
+
 def _known_fda_addresses(crypto_name: str) -> set[str]:
     """FDA addresses known to shkeeper for this crypto (DB + default sidecar FDA)."""
     addrs = {
-        sw.fda_address.lower()
+        _address_key(crypto_name, sw.fda_address)
         for sw in StoreWallet.query.filter(
             StoreWallet.crypto == crypto_name,
             StoreWallet.fda_address.isnot(None),
@@ -526,7 +557,7 @@ def _known_fda_addresses(crypto_name: str) -> set[str]:
         try:
             fda = crypto.fee_deposit_account_for(store_id=1)
             if fda and fda.addr:
-                addrs.add(fda.addr.lower())
+                addrs.add(_address_key(crypto_name, fda.addr))
         except Exception as exc:
             app.logger.warning(
                 "Could not load default FDA for %s during fee-collection validation: %s",
@@ -557,20 +588,24 @@ def _sidecar_managed_addresses(crypto_name: str) -> set[str]:
             )
         if not isinstance(response, list):
             raise ValueError(f"Unexpected address list for {crypto_name}")
-        addrs.update(addr.lower() for addr in response if addr)
+        addrs.update(_address_key(crypto_name, addr) for addr in response if addr)
     return addrs
 
 
 def validate_fee_collection_address(crypto_name: str, address: str | None) -> str | None:
-    """Fee collection must be external or an FDA — not a generated invoice address."""
+    """Validate an admin wallet (stored as fee_collection_address).
+
+    Must be external or an FDA — not a generated invoice address.
+    """
     address = (address or "").strip() or None
     if not address:
         return None
-    if not _is_valid_eth_address(address):
-        raise ValueError(f"Invalid Ethereum address: {address}")
+    if not _is_valid_fee_collection_format(crypto_name, address):
+        family = "TRON" if _is_tron_like(crypto_name) else "Ethereum"
+        raise ValueError(f"Invalid {family} address: {address}")
 
-    lower = address.lower()
-    if lower in _known_fda_addresses(crypto_name):
+    key = _address_key(crypto_name, address)
+    if key in _known_fda_addresses(crypto_name):
         return address
 
     try:
@@ -579,12 +614,12 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
         raise
     except Exception as exc:
         raise ValueError(
-            f"Cannot validate fee collection: sidecar unavailable ({exc})"
+            f"Cannot validate admin wallet: sidecar unavailable ({exc})"
         ) from exc
 
-    if lower in managed:
+    if key in managed:
         raise ValueError(
-            "fee collection must be an external address or a fee-deposit "
+            "admin wallet must be an external address or a fee-deposit "
             "(FDA) address, not a generated invoice/hot address"
         )
     return address
