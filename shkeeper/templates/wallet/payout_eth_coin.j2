@@ -59,9 +59,9 @@
           </div>
           {% endif %}
           {% if payout_locked_destination %}
-          <p class="common-text warning-text mt-2 mb-0">Payouts are locked to your cold wallet.</p>
+          <p class="common-text warning-text mt-2 mb-0">Payouts are locked to your merchant wallet.</p>
           {% elif not cold_wallet_address and is_store_owner %}
-          <p class="common-text danger-text mt-2 mb-0">Cold wallet is not configured. Ask the admin to set it before payout.</p>
+          <p class="common-text danger-text mt-2 mb-0">Merchant wallet is not configured. Ask the admin to set it before payout.</p>
           {% endif %}
         </div>
 
@@ -234,16 +234,24 @@
         fee: 0,
       })
     })
-      .then(response => response.json())
-      .then(data => {
+      .then(response => response.json().then(data => ({ok: response.ok, data})))
+      .then(({ok, data}) => {
         console.log(data);
         if (data.task_id) {
           get_task(data.task_id);
-        } else if (data.status === "error") {
-          alert(`Failure!\n\n${data.message}`);
+          return;
+        }
+        const msg = data.message || data.msg || JSON.stringify(data);
+        alert(`Failure!\n\n${msg}`);
+        tx_progress_off();
+        if (ok === false || data.status === "error") {
           location.reload();
         }
       })
+      .catch(err => {
+        alert(`Failure!\n\n${err}`);
+        tx_progress_off();
+      });
 
     console.log('submit!')
   });
@@ -262,6 +270,10 @@
         } else {
           setTimeout(() => get_task(task_id), 1000);
         }
+      })
+      .catch(err => {
+        alert(`Failure!\n\n${err}`);
+        tx_progress_off();
       })
   }
 
