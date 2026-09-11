@@ -9,6 +9,7 @@ from shkeeper.models import Payout, UserRole
 from shkeeper.modules.classes.crypto import Crypto
 from shkeeper.services.multistore import crypto_supports_multistore, store_wallet_is_ready
 from shkeeper.services.store_service import (
+    _address_key,
     effective_fee_percent,
     fee_collection_address,
     get_store_wallet,
@@ -75,12 +76,13 @@ class PayoutService:
         return store, {"store_id": store.id}
 
     @classmethod
-    def _normalize_addr(cls, addr: str) -> str:
-        return (addr or "").strip().lower()
+    def _normalize_addr(cls, crypto_name, addr: str) -> str:
+        # ETH is case-insensitive; TRON Base58 is case-sensitive.
+        return _address_key(crypto_name, addr)
 
     @classmethod
     def enforce_store_owner_destination(cls, crypto_name, destination, store=None):
-        """Non-admin store context may only payout to the configured cold wallet."""
+        """Non-admin store context may only payout to the configured merchant wallet."""
         user = getattr(g, "user", None)
         store = store or getattr(g, "current_store", None)
         if not store or store.is_default:
@@ -93,12 +95,14 @@ class PayoutService:
         cold = cold.strip()
         if not cold:
             raise ValueError(
-                "Cold wallet address is not configured for this store/crypto. "
+                "Merchant wallet address is not configured for this store/crypto. "
                 "Ask the admin to set it before payout."
             )
-        if cls._normalize_addr(destination) != cls._normalize_addr(cold):
+        if cls._normalize_addr(crypto_name, destination) != cls._normalize_addr(
+            crypto_name, cold
+        ):
             raise ValueError(
-                f"Payout destination must be the configured cold wallet ({cold})"
+                f"Payout destination must be the configured merchant wallet ({cold})"
             )
         return cold
 
@@ -112,9 +116,9 @@ class PayoutService:
         if fee_pct > 0:
             if not fee_addr:
                 raise ValueError(
-                    f"Platform fee is {fee_pct}% but no fee collection address is "
-                    f"configured for {crypto_name}. Set a per-store override or a "
-                    f"global fee collection address."
+                    f"Platform fee is {fee_pct}% but no admin wallet is "
+                    f"configured for {crypto_name}. Set a per-store admin wallet or a "
+                    f"global admin wallet."
                 )
             fee_amount = (gross_amount * fee_pct / Decimal(100)).quantize(
                 Decimal("0.00000001")
