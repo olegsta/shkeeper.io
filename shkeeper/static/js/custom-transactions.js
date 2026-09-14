@@ -403,9 +403,18 @@ function update_tx_table(page = 1) {
   });
   fetch(`/parts/transactions?${args}`)
     .then(function (response) {
+      if (response.redirected && new URL(response.url).pathname === "/login") {
+        window.location.href = "/login";
+        return null;
+      }
       return response.text();
     })
     .then(function (html) {
+      if (!html) return;
+      if (html.includes('id="login-account"')) {
+        window.location.href = "/login";
+        return;
+      }
       document.querySelector(".transactions-table-wrapper").innerHTML = html;
 
       convertUnixDate();

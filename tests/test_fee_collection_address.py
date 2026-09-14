@@ -80,3 +80,20 @@ class TestValidateFeeCollectionAddressFormat(unittest.TestCase):
             validate_fee_collection_address("TRX", self.TRON_ADDR),
             self.TRON_ADDR,
         )
+
+    @mock.patch("shkeeper.services.store_service._sidecar_managed_addresses")
+    @mock.patch(
+        "shkeeper.services.store_service._known_fda_addresses",
+        return_value=set(),
+    )
+    def test_utxo_allows_generated_invoice_address(self, _fda, _managed) -> None:
+        addr = "tb1qmgapuwhrr6mpukhtm4jwgsyzc6wcudt5a9w4su"
+        _managed.return_value = {addr}
+        for crypto in ("BTC", "LTC", "DOGE"):
+            self.assertEqual(validate_fee_collection_address(crypto, addr), addr)
+        _managed.assert_not_called()
+
+    def test_utxo_invalid_address_still_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            validate_fee_collection_address("BTC", "not-a-btc-address")
+        self.assertIn("Invalid BTC address", str(ctx.exception))
