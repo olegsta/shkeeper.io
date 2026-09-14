@@ -630,7 +630,9 @@ def _sidecar_managed_addresses(crypto_name: str) -> set[str]:
 def validate_fee_collection_address(crypto_name: str, address: str | None) -> str | None:
     """Validate an admin wallet (stored as fee_collection_address).
 
-    Must be external or an FDA — not a generated invoice address.
+    ETH/Tron: must be external or an FDA — not a generated invoice/hot address.
+    BTC/LTC/DOGE: any valid address is allowed, including HD invoice/hot addresses
+    (there is no FDA, and fee collection from the same wallet is expected).
     """
     address = (address or "").strip() or None
     if not address:
@@ -643,6 +645,9 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
         else:
             family = "Ethereum"
         raise ValueError(f"Invalid {family} address: {address}")
+
+    if _is_utxo_like(crypto_name):
+        return address
 
     key = _address_key(crypto_name, address)
     if key in _known_fda_addresses(crypto_name):
