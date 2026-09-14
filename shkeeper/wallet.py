@@ -206,7 +206,9 @@ def payout(crypto_name):
     if "BTC-LIGHTNING" == crypto_name:
         tmpl = "wallet/payout_btc_lightning.j2"
 
-    cold_wallet_address = sw.cold_wallet_address if sw else None
+    cold_wallet_address = (sw.cold_wallet_address if sw else None) or None
+    if cold_wallet_address:
+        cold_wallet_address = cold_wallet_address.strip() or None
     payout_locked_destination = None
     if not is_admin_user():
         payout_locked_destination = cold_wallet_address

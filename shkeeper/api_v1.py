@@ -535,8 +535,9 @@ def payoutnotify(crypto_name):
 
         data = request.get_json(force=True)
         app.logger.info(f"Payout notification: {data}")
-        # for p in data:
-        #     Payout.add(p, crypto_name)
+        # Do not Payout.add here: rows are created when the payout is submitted.
+        # Attach txids to those existing rows (store fee+merchant share one BTC tx).
+        Payout.update_from_notify(crypto_name, data)
 
         return {"status": "success"}
     except Exception as e:
@@ -767,6 +768,17 @@ def get_task(crypto_name, id):
     """Get task/job details by id from crypto backend."""
     crypto = Crypto.instances[crypto_name]
     return crypto.get_task(id)
+    # task_response = crypto.get_task(id)
+    # if isinstance(task_response, dict):
+    #     status = task_response.get("status")
+    #     if status in ("SUCCESS", "ERROR", "FAILED", "FAILURE"):
+    #         try:
+    #             Payout.update_from_task(task_response, id)
+    #         except Exception:
+    #             app.logger.exception(
+    #                 "Failed to attach payout txids from task %s", id
+    # )
+    # return task_response
 
 @blp_v1.post("/<string:crypto_name>/multipayout")
 @blp_v1.doc(**multipayout_doc)

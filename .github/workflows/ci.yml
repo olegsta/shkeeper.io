@@ -23,7 +23,6 @@ jobs:
 
       - name: Generate OpenAPI
         run: PYTHONPATH=. python scripts/export_openapi.py
-
       - name: Validate OpenAPI
         run: |
           echo "Checking OpenAPI..."
