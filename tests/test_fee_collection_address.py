@@ -80,3 +80,32 @@ class TestValidateFeeCollectionAddressFormat(unittest.TestCase):
             validate_fee_collection_address("TRX", self.TRON_ADDR),
             self.TRON_ADDR,
         )
+
+    @mock.patch("shkeeper.services.store_service._sidecar_managed_addresses")
+    @mock.patch(
+        "shkeeper.services.store_service._known_fda_addresses",
+        return_value=set(),
+    )
+    def test_utxo_allows_generated_invoice_address(self, _fda, _managed) -> None:
+        cases = {
+            "BTC": "tb1qmgapuwhrr6mpukhtm4jwgsyzc6wcudt5a9w4su",
+            "LTC": "ltc1qmgapuwhrr6mpukhtm4jwgsyzc6wcudt5a9w4su",
+            "DOGE": "DFKpgdtv6KLLPuWmYkBqAnxDyXjGgBEirB",
+        }
+        for crypto, addr in cases.items():
+            _managed.return_value = {addr}
+            self.assertEqual(validate_fee_collection_address(crypto, addr), addr)
+        _managed.assert_not_called()
+
+    def test_utxo_accepts_any_non_empty_destination(self) -> None:
+        self.assertEqual(
+            validate_fee_collection_address(
+                "DOGE", "DFKpgdtv6KLLPuWmYkBqAnxDyXjGgBEirB"
+            ),
+            "DFKpgdtv6KLLPuWmYkBqAnxDyXjGgBEirB",
+        )
+        self.assertEqual(
+            validate_fee_collection_address("DOGE", "any-destination"),
+            "any-destination",
+        )
+        self.assertIsNone(validate_fee_collection_address("DOGE", "   "))

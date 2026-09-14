@@ -535,8 +535,9 @@ def payoutnotify(crypto_name):
 
         data = request.get_json(force=True)
         app.logger.info(f"Payout notification: {data}")
-        # for p in data:
-        #     Payout.add(p, crypto_name)
+        # Do not Payout.add here: rows are created when the payout is submitted.
+        # Attach txids to those existing rows (store fee+merchant share one BTC tx).
+        Payout.update_from_notify(crypto_name, data)
 
         return {"status": "success"}
     except Exception as e:

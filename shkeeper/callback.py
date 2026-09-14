@@ -390,14 +390,25 @@ def poll_all_pending_payouts():
         crypto = Crypto.instances.get(payout.crypto)
         if not crypto:
             continue
-        task_response = crypto.get_task(payout.task_id)
-        status = task_response.get("status")
-        app.logger.info(f"poll_all_pending_payout task_response {task_response}")
-        if status in ("SUCCESS", "ERROR", "FAILED", "FAILURE"):
-            app.logger.info(f"update_from_task")
-            app.logger.info(f"update_from_task {task_response}")
-            app.logger.info(f"update_from_task {payout.task_id}")
-            Payout.update_from_task(task_response, payout.task_id)
+        try:
+            task_response = crypto.get_task(payout.task_id)
+            status = (
+                task_response.get("status")
+                if isinstance(task_response, dict)
+                else None
+            )
+            app.logger.info(f"poll_all_pending_payout task_response {task_response}")
+            if status in ("SUCCESS", "ERROR", "FAILED", "FAILURE"):
+                app.logger.info(f"update_from_task")
+                app.logger.info(f"update_from_task {task_response}")
+                app.logger.info(f"update_from_task {payout.task_id}")
+                Payout.update_from_task(task_response, payout.task_id)
+        except Exception:
+            app.logger.exception(
+                "poll_all_pending_payout failed for %s task_id=%s",
+                payout.crypto,
+                payout.task_id,
+            )
     db.session.commit()
 
 def update_confirmations():

@@ -542,15 +542,9 @@ def _is_valid_eth_address(address: str) -> bool:
         return False
 
 
-def _is_valid_utxo_address(address: str) -> bool:
-    if not address:
-        return False
-    if address[0] in ("1", "3", "m", "n", "2", "L", "M", "9", "A") and 26 <= len(address) <= 35:
-        return True
-    lowered = address.lower()
-    if lowered.startswith(("bc1", "tb1", "bcrt1", "ltc1", "tltc1", "doge1")) and 14 <= len(address) <= 90:
-        return True
-    return False
+def _is_valid_utxo_address(address: str, crypto_name: str | None = None) -> bool:
+    # BTC/LTC/DOGE: do not second-guess the destination; the operator owns the risk.
+    return bool(address)
 
 
 def _is_valid_tron_address(address: str) -> bool:
@@ -570,7 +564,7 @@ def _is_utxo_like(crypto_name: str) -> bool:
 
 def _is_valid_fee_collection_format(crypto_name: str, address: str) -> bool:
     if _is_utxo_like(crypto_name):
-        return _is_valid_utxo_address(address)
+        return _is_valid_utxo_address(address, crypto_name)
     if _is_tron_like(crypto_name):
         return _is_valid_tron_address(address)
     return _is_valid_eth_address(address)
@@ -630,7 +624,8 @@ def _sidecar_managed_addresses(crypto_name: str) -> set[str]:
 def validate_fee_collection_address(crypto_name: str, address: str | None) -> str | None:
     """Validate an admin wallet (stored as fee_collection_address).
 
-    Must be external or an FDA — not a generated invoice address.
+    ETH/Tron: must be external or an FDA — not a generated invoice/hot address.
+    BTC/LTC/DOGE: any non-empty destination is stored as-is.
     """
     address = (address or "").strip() or None
     if not address:
@@ -643,6 +638,9 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
         else:
             family = "Ethereum"
         raise ValueError(f"Invalid {family} address: {address}")
+
+    if _is_utxo_like(crypto_name):
+        return address
 
     key = _address_key(crypto_name, address)
     if key in _known_fda_addresses(crypto_name):
