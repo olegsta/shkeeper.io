@@ -924,6 +924,47 @@ class Payout(db.Model):
     )
     transactions = db.relationship("PayoutTx", backref="payout", lazy=True)
 
+    @staticmethod
+    def _result_dest(result):
+        if not isinstance(result, dict):
+            return None
+        dest = result.get("dest") or result.get("destination")
+        return str(dest).strip().lower() if dest else None
+
+    @staticmethod
+    def _payout_dest_key(payout):
+        return (payout.dest_addr or "").strip().lower()
+
+    @classmethod
+    def _newest_payouts_by_dest(cls, payouts):
+        newest = {}
+        for payout in payouts:
+            dest = cls._payout_dest_key(payout)
+            current = newest.get(dest)
+            if current is None:
+                newest[dest] = payout
+                continue
+            created = getattr(payout, "created_at", None)
+            current_created = getattr(current, "created_at", None)
+            if created is not None and (
+                current_created is None or created > current_created
+            ):
+                newest[dest] = payout
+        return newest
+
+    @classmethod
+    def _attach_txids(cls, payout, result):
+        if result.get("status") == "error":
+            payout.status = PayoutStatus.FAIL
+            payout.success = "No"
+            payout.error = cls._format_mkpayout_error(
+                result.get("error") or result.get("msg") or result
+            )
+            return
+        for txid in result.get("txids") or []:
+            if not any(t.txid == txid for t in payout.transactions):
+                db.session.add(PayoutTx(payout_id=payout.id, txid=txid))
+
     @classmethod
     def update_from_task(cls, task_response, task_id):
         app.logger.warning(f"payouts task_response {task_response}")
@@ -932,24 +973,98 @@ class Payout(db.Model):
         if not payouts:
             app.logger.warning(f"No payouts found for task_id={task_id}")
             return
+        if not isinstance(task_response, dict):
+            app.logger.warning(
+                "update_from_task expected dict, got %s", type(task_response)
+            )
+            return
         status = task_response.get("status")
         results = task_response.get("result")
         if status != "SUCCESS":
             for payout in payouts:
                 payout.status = PayoutStatus.FAIL
                 payout.success = "No"
-                payout.error = results
+                payout.error = cls._format_mkpayout_error(results)
             db.session.commit()
             return
-        result_by_dest = {r["dest"].lower(): r for r in results}
+        result_by_dest = {}
+        for r in results or []:
+            dest = cls._result_dest(r)
+            if dest:
+                result_by_dest[dest] = r
         for payout in payouts:
-            r = result_by_dest.get(payout.dest_addr.lower())
+            r = result_by_dest.get((payout.dest_addr or "").strip().lower())
             if not r:
+                app.logger.warning(
+                    "update_from_task no result for dest=%s task_id=%s",
+                    payout.dest_addr,
+                    task_id,
+                )
                 continue
-            txids = r.get("txids", [])
-            for txid in txids:
-                if not any(t.txid == txid for t in payout.transactions):
-                    db.session.add(PayoutTx(payout_id=payout.id, txid=txid))
+            cls._attach_txids(payout, r)
+        db.session.commit()
+
+    @classmethod
+    def update_from_notify(cls, crypto_name, results):
+        """Attach txids from sidecar payoutnotify without creating duplicate Payout rows."""
+        if not isinstance(results, list) or not results:
+            return
+        dest_set = {d for d in (cls._result_dest(r) for r in results) if d}
+        if not dest_set:
+            return
+        pending = cls.query.filter(
+            cls.crypto == crypto_name,
+            cls.status == PayoutStatus.IN_PROGRESS,
+        ).all()
+        by_task = {}
+        for payout in pending:
+            if payout.task_id:
+                by_task.setdefault(payout.task_id, []).append(payout)
+        matches = []
+        for tid, group in by_task.items():
+            group_dests = {cls._payout_dest_key(p) for p in group}
+            if dest_set != group_dests:
+                continue
+            newest = max(
+                (p.created_at for p in group if getattr(p, "created_at", None)),
+                default=None,
+            )
+            matches.append((newest, tid))
+        task_id = None
+        if matches:
+            matches.sort(key=lambda item: (item[0] is not None, item[0]))
+            task_id = matches[-1][1]
+        if task_id:
+            all_error = bool(results) and all(
+                isinstance(r, dict) and r.get("status") == "error" for r in results
+            )
+            cls.update_from_task(
+                {
+                    "status": "FAILURE" if all_error else "SUCCESS",
+                    "result": results,
+                },
+                task_id,
+            )
+            return
+        result_by_dest = {}
+        for r in results:
+            dest = cls._result_dest(r)
+            if dest:
+                result_by_dest[dest] = r
+        candidates = [
+            p
+            for p in pending
+            if cls._payout_dest_key(p) in result_by_dest
+        ]
+        if not candidates:
+            app.logger.warning(
+                "update_from_notify no in-progress payouts for %s dests=%s",
+                crypto_name,
+                dest_set,
+            )
+            return
+        for payout in cls._newest_payouts_by_dest(candidates).values():
+            cls._attach_txids(payout, result_by_dest[cls._payout_dest_key(payout)])
         db.session.commit()
 
     @classmethod

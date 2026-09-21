@@ -59,7 +59,7 @@ def is_multistore_backend(crypto) -> bool:
     if crypto is None:
         return False
     from shkeeper.modules.classes.ethereum import Ethereum
-    from shkeeper.modules.classes.shkeeper_wallet_crypto import UtxoLikeWalletCrypto
+    from shkeeper.modules.classes.utxo_like_wallet_crypto import UtxoLikeWalletCrypto
     from shkeeper.modules.classes.tron_token import TronToken
 
     return isinstance(crypto, (Ethereum, TronToken, UtxoLikeWalletCrypto))
@@ -69,7 +69,7 @@ def uses_fee_deposit_account(crypto) -> bool:
     """ETH-like and Tron have an FDA; BTC/LTC/DOGE do not."""
     if crypto is None:
         return False
-    from shkeeper.modules.classes.shkeeper_wallet_crypto import UtxoLikeWalletCrypto
+    from shkeeper.modules.classes.utxo_like_wallet_crypto import UtxoLikeWalletCrypto
 
     return is_multistore_backend(crypto) and not isinstance(
         crypto, UtxoLikeWalletCrypto
@@ -87,7 +87,12 @@ def store_wallet_is_ready(sw, crypto=None) -> bool:
     if crypto is None:
         from shkeeper.modules.classes.crypto import Crypto
 
-        crypto = Crypto.instances.get(sw.crypto)
+        crypto = Crypto.instances.get(getattr(sw, "crypto", None))
+    if crypto is None:
+        crypto_name = getattr(sw, "crypto", None)
+        if crypto_name in ("BTC", "LTC", "DOGE"):
+            return True
+        return bool(getattr(sw, "fda_address", None))
     if uses_fee_deposit_account(crypto):
         return bool(sw.fda_address)
     return True

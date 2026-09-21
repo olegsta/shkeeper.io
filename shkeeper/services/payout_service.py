@@ -71,7 +71,8 @@ class PayoutService:
         if not store or not crypto_supports_multistore(crypto_name):
             return store, {}
         sw = get_store_wallet(store, crypto_name)
-        if not store_wallet_is_ready(sw):
+        crypto = Crypto.instances.get(crypto_name)
+        if not store_wallet_is_ready(sw, crypto):
             return store, {}
         return store, {"store_id": store.id}
 

@@ -60,6 +60,24 @@ class TestStoreWalletIsReady(unittest.TestCase):
         ):
             self.assertFalse(store_wallet_is_ready(sw, mock.Mock()))
 
+    def test_unresolved_eth_requires_fda(self) -> None:
+        from shkeeper.modules.classes.crypto import Crypto
+
+        sw = SimpleNamespace(
+            status=StoreWalletStatus.READY, fda_address=None, crypto="ETH"
+        )
+        with mock.patch.dict(Crypto.instances, {}, clear=True):
+            self.assertFalse(store_wallet_is_ready(sw))
+
+    def test_unresolved_btc_is_ready_without_fda(self) -> None:
+        from shkeeper.modules.classes.crypto import Crypto
+
+        sw = SimpleNamespace(
+            status=StoreWalletStatus.READY, fda_address=None, crypto="BTC"
+        )
+        with mock.patch.dict(Crypto.instances, {}, clear=True):
+            self.assertTrue(store_wallet_is_ready(sw))
+
 
 class TestUsesFeeDepositAccount(unittest.TestCase):
     def test_none_is_false(self) -> None:
