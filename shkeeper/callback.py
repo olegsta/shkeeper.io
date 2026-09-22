@@ -246,6 +246,9 @@ def poll_unconfirmed_payouts():
                 confirmations = crypto.get_confirmations_by_txid(tx.txid)
                 app.logger.info(f"poll_unconfirmed_payouts confirmations {confirmations}")
             except Exception:
+                app.logger.exception(
+                    f"poll_unconfirmed_payouts failed to get confirmations for {tx.txid}"
+                )
                 continue
             if confirmations > int(app.config.get("MIN_CONFIRMATION_BLOCK_FOR_PAYOUT")):
                 all_confirmed = True

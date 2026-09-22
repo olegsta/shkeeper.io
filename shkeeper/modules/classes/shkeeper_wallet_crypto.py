@@ -72,6 +72,8 @@ class UtxoLikeWalletCrypto(Crypto):
 
     def get_confirmations_by_txid(self, txid):
         transactions = self.getaddrbytx(txid)
+        if not transactions:
+            raise RuntimeError(f"No transaction details for {txid}")
         _, _, confirmations, _ = transactions[0]
         return confirmations
 
