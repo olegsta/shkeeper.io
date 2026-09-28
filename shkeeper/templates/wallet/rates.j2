@@ -19,6 +19,7 @@
         <div>Fee calculation</div>
       </div>
       <form id="rates_form" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="rates-list">
             {% for crypto in cryptos %}
             <article class="rates-card">

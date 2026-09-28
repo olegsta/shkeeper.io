@@ -715,7 +715,7 @@ def post_parts_tron_staking_stake():
         filter(lambda x: isinstance(x, TronToken), Crypto.instances.values())
     )
     stake_result = tron.stake_trx(
-        request.values.get("amount_trx"), request.values.get("resource")
+        request.form.get("amount_trx"), request.form.get("resource")
     )
     return render_template(
         "wallet/configure/tron/main__dialog_staking__result.j2",
@@ -747,9 +747,9 @@ def post_parts_tron_staking_undelegate():
         filter(lambda x: isinstance(x, TronToken), Crypto.instances.values())
     )
     undelegate_result = tron.undelegate_trx(
-        request.values.get("to"),
-        request.values.get("amount_trx"),
-        request.values.get("resource"),
+        request.form.get("to"),
+        request.form.get("amount_trx"),
+        request.form.get("resource"),
     )
     return render_template(
         "wallet/configure/tron/main__dialog_undelegation__result.j2",

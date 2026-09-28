@@ -151,6 +151,10 @@ def create_app(test_config=None):
 
     Session(app)
 
+    from shkeeper.csrf import init_csrf
+
+    init_csrf(app)
+
     scheduler.init_app(app)
 
     if app.debug or app.config.get("DEV_MODE"):

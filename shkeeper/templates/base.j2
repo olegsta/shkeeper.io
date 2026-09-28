@@ -8,7 +8,48 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='fonts/montserrat.css') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='fonts/courier-prime.css') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}" />
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <script src="{{ url_for('static', filename='js/htmx.min.js') }}"></script>
+    <script>
+      (function () {
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        var token = meta ? (meta.getAttribute("content") || "") : "";
+        if (!token) return;
+        var unsafe = { POST: 1, PUT: 1, PATCH: 1, DELETE: 1 };
+
+        if (window.fetch) {
+          var origFetch = window.fetch;
+          window.fetch = function (input, init) {
+            init = init ? Object.assign({}, init) : {};
+            var method = (init.method || (input && input.method) || "GET").toUpperCase();
+            if (unsafe[method]) {
+              var headers = new Headers(init.headers || undefined);
+              if (!headers.has("X-CSRFToken")) headers.set("X-CSRFToken", token);
+              init.headers = headers;
+            }
+            return origFetch.call(this, input, init);
+          };
+        }
+
+        var origOpen = XMLHttpRequest.prototype.open;
+        var origSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function (method) {
+          this._shkeeperCsrf = String(method || "GET").toUpperCase();
+          return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function () {
+          if (unsafe[this._shkeeperCsrf]) {
+            try { this.setRequestHeader("X-CSRFToken", token); } catch (e) {}
+          }
+          return origSend.apply(this, arguments);
+        };
+
+        window.csrfToken = token;
+        document.addEventListener("htmx:configRequest", function (evt) {
+          evt.detail.headers["X-CSRFToken"] = token;
+        });
+      })();
+    </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
     <link id="css1" rel="stylesheet" href="{{ url_for('static', filename='css/theme.' + theme + '.css') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/tooltips.css') }}">

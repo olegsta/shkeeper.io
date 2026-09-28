@@ -33,6 +33,7 @@
               <p class="card-text mb-3">Enter the 6-digit code from your authenticator app to complete setup:</p>
 
               <form method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="mb-5">
                   <input
                     type="text"

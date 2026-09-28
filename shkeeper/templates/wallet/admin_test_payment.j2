@@ -21,6 +21,7 @@
   {% endif %}
 
   <form method="post" class="common-text">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="mb-3">
       <label for="crypto" class="form-label">Crypto</label>
       <select name="crypto" id="crypto" class="form-select common-text" required style="width: 300px">
