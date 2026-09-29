@@ -111,6 +111,10 @@ class PayoutService:
     def build_platform_fee_transfers(cls, store, crypto_name, gross_amount, destination):
         sw = get_store_wallet(store, crypto_name)
         fee_pct = effective_fee_percent(store, sw)
+        if not fee_pct.is_finite() or fee_pct < 0 or fee_pct > Decimal("100"):
+            raise ValueError(
+                f"Store {store.id} has an invalid platform fee ({fee_pct}); fix it before payout"
+            )
         fee_addr = fee_collection_address(store, sw, crypto_name)
         gross_amount = Decimal(gross_amount)
 

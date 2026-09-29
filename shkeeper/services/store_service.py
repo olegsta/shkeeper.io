@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import re
 import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
@@ -128,14 +131,23 @@ def resolve_store_by_api_key(api_key: str):
         return default
     return None
 
+def _coerce_fee_percent(value):
+    try:
+        pct = Decimal(value)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("Invalid platform fee percent") from exc
+    if not pct.is_finite():
+        raise ValueError("Platform fee percent must be a finite number")
+    if pct < 0 or pct > Decimal("100"):
+        raise ValueError("Platform fee percent must be between 0 and 100")
+    return pct
+
+
 def create_store(name: str, platform_fee_percent=Decimal("0")):
     name = (name or "").strip()
     if not name:
         raise ValueError("Store name is required")
-    try:
-        platform_fee_percent = Decimal(platform_fee_percent)
-    except (InvalidOperation, TypeError) as exc:
-        raise ValueError("Invalid platform fee percent") from exc
+    platform_fee_percent = _coerce_fee_percent(platform_fee_percent)
     store = Store(
         name=name,
         api_key=secrets.token_urlsafe(24),
@@ -155,12 +167,12 @@ def update_store(store: Store, *, name=None, platform_fee_percent=None):
         name = name.strip()
         if not name:
             raise ValueError("Store name is required")
+    if platform_fee_percent is not None:
+        platform_fee_percent = _coerce_fee_percent(platform_fee_percent)
+    if name is not None:
         store.name = name
     if platform_fee_percent is not None:
-        try:
-            store.platform_fee_percent = Decimal(platform_fee_percent)
-        except (InvalidOperation, TypeError) as exc:
-            raise ValueError("Invalid platform fee percent") from exc
+        store.platform_fee_percent = platform_fee_percent
     db.session.commit()
     return store
 
@@ -515,6 +527,7 @@ def fee_collection_setting_name(crypto_name: str) -> str:
 
 _TRON_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _TRON_MULTISTORE = frozenset({"TRX", "USDT", "USDC"})
+_ETH_ADDRESS_RE = re.compile(r"^0[xX][0-9a-fA-F]{40}$")
 
 
 def _is_tron_like(crypto_name: str) -> bool:
@@ -533,24 +546,149 @@ def _address_key(crypto_name: str, address: str) -> str:
 
 
 def _is_valid_eth_address(address: str) -> bool:
-    if not address or not address.startswith(("0x", "0X")) or len(address) != 42:
+    """Strict 0x + 40 hex digits. Rejects signs, separators and whitespace."""
+    return bool(address) and _ETH_ADDRESS_RE.match(address) is not None
+
+
+# Mainnet and testnet version bytes. Testnet P2PKH (0x6F) is shared by BTC and LTC;
+# testnet P2SH (0xC4) is shared by BTC and DOGE. Mainnet bytes do not overlap.
+_UTXO_VERSION_BYTES = {
+    "BTC": frozenset({0x00, 0x05, 0x6F, 0xC4}),
+    "LTC": frozenset({0x30, 0x32, 0x6F, 0x3A}),
+    "DOGE": frozenset({0x1E, 0x16, 0x71, 0xC4}),
+}
+_UTXO_BECH32_HRP = {
+    "BTC": frozenset({"bc", "tb"}),
+    "LTC": frozenset({"ltc", "tltc"}),
+    "DOGE": frozenset(),
+}
+_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+_BECH32M_CONST = 0x2BC830A3
+
+
+def _b58check_payload(address: str) -> bytes | None:
+    """Decode a 25-byte Base58Check payload (version + 20-byte hash + checksum)."""
+    if not address or any(ch not in _TRON_B58_ALPHABET for ch in address):
+        return None
+    num = 0
+    for ch in address:
+        num = num * 58 + _TRON_B58_ALPHABET.index(ch)
+    pad = 0
+    for ch in address:
+        if ch != "1":
+            break
+        pad += 1
+    body = num.to_bytes((num.bit_length() + 7) // 8, "big") if num else b""
+    raw = b"\x00" * pad + body
+    if len(raw) != 25:
+        return None
+    payload, checksum = raw[:21], raw[21:]
+    expected = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    if not hmac.compare_digest(expected, checksum):
+        return None
+    return payload
+
+
+def _bech32_polymod(values: list[int]) -> int:
+    generator = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
+    chk = 1
+    for value in values:
+        top = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ value
+        for i in range(5):
+            chk ^= generator[i] if ((top >> i) & 1) else 0
+    return chk
+
+
+def _convertbits(data: list[int], frombits: int, tobits: int) -> list[int] | None:
+    acc = 0
+    bits = 0
+    ret: list[int] = []
+    maxv = (1 << tobits) - 1
+    max_acc = (1 << (frombits + tobits - 1)) - 1
+    for value in data:
+        if value < 0 or value >> frombits:
+            return None
+        acc = ((acc << frombits) | value) & max_acc
+        bits += frombits
+        while bits >= tobits:
+            bits -= tobits
+            ret.append((acc >> bits) & maxv)
+    if bits >= frombits or ((acc << (tobits - bits)) & maxv):
+        return None
+    return ret
+
+
+def _is_valid_bech32_address(address: str, hrps: frozenset[str]) -> bool:
+    """BIP173/BIP350 segwit address. Mixed case is rejected."""
+    if (
+        not address
+        or not hrps
+        or any(ord(ch) < 33 or ord(ch) > 126 for ch in address)
+        or (address.lower() != address and address.upper() != address)
+    ):
+        return False
+    bech = address.lower()
+    pos = bech.rfind("1")
+    if pos < 1 or pos + 7 > len(bech) or len(bech) > 90:
+        return False
+    hrp, data_part = bech[:pos], bech[pos + 1 :]
+    if hrp not in hrps:
         return False
     try:
-        int(address[2:], 16)
-        return True
+        data = [_BECH32_CHARSET.index(ch) for ch in data_part]
     except ValueError:
         return False
+    spec = _bech32_polymod(
+        [ord(ch) >> 5 for ch in hrp] + [0] + [ord(ch) & 31 for ch in hrp] + data
+    )
+    witver = data[0]
+    if witver == 0:
+        if spec != 1:
+            return False
+    elif witver <= 16:
+        if spec != _BECH32M_CONST:
+            return False
+    else:
+        return False
+    program = _convertbits(data[1:-6], 5, 8)
+    if program is None or not 2 <= len(program) <= 40:
+        return False
+    if witver == 0 and len(program) not in (20, 32):
+        return False
+    if witver == 1 and len(program) != 32:
+        return False
+    return True
 
 
 def _is_valid_utxo_address(address: str, crypto_name: str | None = None) -> bool:
-    # BTC/LTC/DOGE: do not second-guess the destination; the operator owns the risk.
-    return bool(address)
+    versions = _UTXO_VERSION_BYTES.get(crypto_name or "")
+    if not address or versions is None:
+        return False
+    payload = _b58check_payload(address)
+    if payload is not None and payload[0] in versions:
+        return True
+    return _is_valid_bech32_address(address, _UTXO_BECH32_HRP.get(crypto_name, frozenset()))
 
 
 def _is_valid_tron_address(address: str) -> bool:
+    """Base58Check-validated TRON mainnet address (0x41 prefix, 4-byte checksum)."""
     if not address or len(address) != 34 or not address.startswith("T"):
         return False
-    return all(ch in _TRON_B58_ALPHABET for ch in address)
+    if any(ch not in _TRON_B58_ALPHABET for ch in address):
+        return False
+    num = 0
+    for ch in address:
+        num = num * 58 + _TRON_B58_ALPHABET.index(ch)
+    try:
+        raw = num.to_bytes(25, "big")
+    except OverflowError:
+        return False
+    payload, checksum = raw[:21], raw[21:]
+    if payload[0] != 0x41:
+        return False
+    expected = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    return hmac.compare_digest(expected, checksum)
 
 
 def _is_utxo_like(crypto_name: str) -> bool:
@@ -621,11 +759,32 @@ def _sidecar_managed_addresses(crypto_name: str) -> set[str]:
     return addrs
 
 
+def validate_merchant_wallet_address(crypto_name: str, address: str | None) -> str | None:
+    """Validate the merchant payout destination (cold wallet).
+
+    Unlike the admin wallet this may be any well-formed external address, but it
+    must be well-formed for the coin's network — it becomes the binding payout
+    destination for store owners (see PayoutService.resolve_destination).
+    """
+    address = (address or "").strip() or None
+    if not address:
+        return None
+    if not _is_valid_fee_collection_format(crypto_name, address):
+        if _is_tron_like(crypto_name):
+            family = "TRON"
+        elif _is_utxo_like(crypto_name):
+            family = crypto_name
+        else:
+            family = "Ethereum"
+        raise ValueError(f"Invalid {family} merchant wallet address: {address}")
+    return address
+
+
 def validate_fee_collection_address(crypto_name: str, address: str | None) -> str | None:
     """Validate an admin wallet (stored as fee_collection_address).
 
     ETH/Tron: must be external or an FDA — not a generated invoice/hot address.
-    BTC/LTC/DOGE: any non-empty destination is stored as-is.
+    BTC/LTC/DOGE: must be a checksum-valid address for that coin.
     """
     address = (address or "").strip() or None
     if not address:

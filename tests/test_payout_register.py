@@ -7,6 +7,7 @@ from unittest import mock
 from flask import Flask
 
 from shkeeper.models import Payout, PayoutStatus
+from shkeeper.services.payout_service import PayoutService
 
 
 class _AppContextTestCase(unittest.TestCase):
@@ -391,6 +392,51 @@ class TestUpdateFromNotify(_AppContextTestCase):
         added = [c.args[0] for c in self.db.session.add.call_args_list]
         self.assertEqual({row.payout_id for row in added}, {21, 22})
         self.assertEqual({row.txid for row in added}, {txid})
+
+
+class TestPlatformFeeGuard(unittest.TestCase):
+    def _transfers(self, fee_pct, gross=Decimal("100")):
+        store = mock.Mock(id=7)
+        with (
+            mock.patch(
+                "shkeeper.services.payout_service.get_store_wallet",
+                return_value=None,
+            ),
+            mock.patch(
+                "shkeeper.services.payout_service.effective_fee_percent",
+                return_value=fee_pct,
+            ),
+            mock.patch(
+                "shkeeper.services.payout_service.fee_collection_address",
+                return_value="0x" + "ab" * 20,
+            ),
+        ):
+            return PayoutService.build_platform_fee_transfers(
+                store, "ETH", gross, "0x" + "cd" * 20
+            )
+
+    def test_non_finite_and_out_of_range_fees_are_rejected(self) -> None:
+        for fee in (
+            Decimal("NaN"),
+            Decimal("Infinity"),
+            Decimal("-50"),
+            Decimal("100.00000001"),
+            Decimal("1E+9999"),
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                self._transfers(fee)
+            self.assertIn("invalid platform fee", str(ctx.exception))
+
+    def test_zero_fee_pays_gross_to_destination(self) -> None:
+        dest = "0x" + "cd" * 20
+        transfers = self._transfers(Decimal("0"))
+        self.assertEqual(transfers, [{"dest": dest, "amount": Decimal("100")}])
+
+    def test_positive_fee_splits_gross(self) -> None:
+        transfers = self._transfers(Decimal("2.5"), Decimal("100"))
+        self.assertEqual(transfers[0]["dest"], "0x" + "ab" * 20)
+        self.assertEqual(transfers[0]["amount"], Decimal("2.50000000"))
+        self.assertEqual(transfers[1]["amount"], Decimal("97.50000000"))
 
 
 if __name__ == "__main__":
