@@ -14,6 +14,7 @@
           {% endfor %}
 
           <form class="d-flex flex-column align-items-center" method="post" id="totp-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input
               placeholder="000000"
               type="text"
@@ -33,6 +34,7 @@
           <details class="mt-4 text-center">
             <summary class="text-muted common-text" style="cursor: pointer; list-style-position: inside;">Lost your device?</summary>
             <form class="d-flex flex-column align-items-center mt-3" method="post" id="backup-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="use_backup" value="1">
               <input
                 placeholder="Backup Code"

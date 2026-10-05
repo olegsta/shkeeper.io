@@ -1,6 +1,7 @@
 alembic==1.18.1
 bcrypt==3.2.2
 Flask==2.2.2
+Flask-WTF==1.2.1
 Werkzeug==2.3.7
 Flask-APScheduler==1.12.4
 Flask-Session==0.4.0

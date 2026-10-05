@@ -23,6 +23,7 @@
               <p class="card-text mb-4">To generate new backup codes, please confirm with your password and current 2FA code:</p>
 
               <form method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="mb-3">
                   <label for="password" class="form-label">Password</label>
                   <input
