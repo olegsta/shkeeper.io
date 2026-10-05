@@ -23,6 +23,7 @@
               </div>
             </div>
             <form class="d-flex flex-column align-items-center mt-4" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="encryption" value="yes" />
               <input placeholder="encryption password" type="password" name="key" class="form-control mb-4" id="pw1" requred />
               <input placeholder="repeat encryption password" type="password" name="key2" class="form-control mb-4" id="pw2" required />
@@ -36,6 +37,7 @@
             </form>
             <br />
             <form method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="encryption" value="" />
               <button type="submit" class="btn link-danger btn-link fs-6">Continue without encryption</button>
             </form>

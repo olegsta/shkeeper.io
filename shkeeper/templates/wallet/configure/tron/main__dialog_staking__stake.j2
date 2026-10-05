@@ -11,7 +11,8 @@
         </p>
         <ul>
                 <li>
-                        <span hx-post="/parts/tron-staking-stake?resource=ENERGY"
+                        <span hx-post="/parts/tron-staking-stake"
+                              hx-vals='{{ {"resource": "ENERGY"}|tojson }}'
                               hx-include="#trx_stake_input"
                               hx-trigger="click"
                               hx-target="#tron_staking"
@@ -27,7 +28,8 @@
                         </span>
                 </li>
                 <li>
-                        <span hx-post="/parts/tron-staking-stake?resource=BANDWIDTH"
+                        <span hx-post="/parts/tron-staking-stake"
+                              hx-vals='{{ {"resource": "BANDWIDTH"}|tojson }}'
                               hx-include="#trx_stake_input"
                               hx-trigger="click"
                               hx-target="#tron_staking"

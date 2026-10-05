@@ -30,7 +30,8 @@
         </p>
         <ul>
             <li>
-                <span hx-post="/parts/tron-staking-undelegate?resource=ENERGY&to={{ recipient_address }}"
+                <span hx-post="/parts/tron-staking-undelegate"
+                      hx-vals='{{ {"resource": "ENERGY", "to": recipient_address}|tojson }}'
                       hx-include="#trx_undelegate_input"
                       hx-trigger="click"
                       hx-target="#dialog_undelegation_content"
@@ -47,7 +48,8 @@
                 </span>
             </li>
             <li>
-                <span hx-post="/parts/tron-staking-undelegate?resource=BANDWIDTH&to={{ recipient_address }}"
+                <span hx-post="/parts/tron-staking-undelegate"
+                      hx-vals='{{ {"resource": "BANDWIDTH", "to": recipient_address}|tojson }}'
                       hx-include="#trx_undelegate_input"
                       hx-trigger="click"
                       hx-target="#dialog_undelegation_content"
