@@ -4,7 +4,10 @@ from marshmallow import Schema, fields
 class ErrorSchema(Schema):
     status = fields.String(example="error", description="Request status")
     message = fields.String(description="Error message")
-    traceback = fields.String(load_default=None)
+    error_id = fields.String(
+        load_default=None,
+        description="Correlation id. Server logs contain the exception details.",
+    )
 
 
 class SuccessSchema(Schema):
