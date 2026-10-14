@@ -366,7 +366,11 @@ def settings():
 @bp_wallet.route("/admin/test-payment-request", methods=("GET", "POST"))
 @login_required
 def admin_test_payment_request():
-    """Hidden dev-only tool for manually creating a payment request against the test callback receiver."""
+    """Admin-only diagnostic: create a payment request against the test receiver."""
+    require_admin()
+    if not app.config.get("DEV_MODE"):
+        abort(404)
+
     cryptos = get_available_cryptos()["crypto_list"]
     result = None
     error = None
@@ -384,8 +388,9 @@ def admin_test_payment_request():
             }
             invoice = Invoice.add(crypto=crypto, request=req)
             result = {**invoice.for_response(), "callback_url": req["callback_url"]}
-        except Exception as e:
-            error = str(e)
+        except Exception:
+            app.logger.exception("admin test payment request failed")
+            error = "Failed to create the test payment request; see server logs."
 
     return render_template(
         "wallet/admin_test_payment.j2",
