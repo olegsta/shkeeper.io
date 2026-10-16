@@ -81,7 +81,7 @@
                 <span class="nav-label">Settings</span>
               </a>
             </li>
-            {% if config.DEV_MODE %}
+            {% if is_admin and config.DEV_MODE %}
             <li class="nav-item">
               <a id="admin-test-payment-request-link" href="{{ url_for('wallet.admin_test_payment_request') }}" class="nav-link">
                 <span class="nav-label">[dev] Gen Invoice</span>
