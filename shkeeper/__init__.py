@@ -47,8 +47,26 @@ import flask_migrate
 migrate = flask_migrate.Migrate()
 
 
-def internal_server_error(e):
+def _api_internal_error():
+    error_id = uuid.uuid4().hex[:12]
+    current_app.logger.exception("[error_id=%s] Unhandled exception", error_id)
+    return {
+        "status": "error",
+        "message": "Internal server error",
+        "error_id": error_id,
+    }, 500
+
+
+def _html_internal_error():
     return render_template("500.j2", theme=request.cookies.get("theme", "light")), 500
+
+
+def internal_server_error(e):
+    # A code-specific 500 handler wins over the Exception handler for
+    # InternalServerError (abort(500), after_request failures).
+    if request.path.startswith("/api/"):
+        return _api_internal_error()
+    return _html_internal_error()
 
 
 def page_not_found_error(e):
@@ -60,15 +78,11 @@ def handle_unexpected_error(e):
     if isinstance(e, HTTPException):
         return e
 
+    if request.path.startswith("/api/"):
+        return _api_internal_error()
     error_id = uuid.uuid4().hex[:12]
     current_app.logger.exception("[error_id=%s] Unhandled exception", error_id)
-    if request.path.startswith("/api/"):
-        return {
-            "status": "error",
-            "message": "Internal server error",
-            "error_id": error_id,
-        }, 500
-    return render_template("500.j2", theme=request.cookies.get("theme", "light")), 500
+    return _html_internal_error()
 
 
 def create_app(test_config=None):
