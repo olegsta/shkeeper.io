@@ -3,8 +3,10 @@ import os
 import logging
 import secrets
 import shutil
+import uuid
 
-from flask import logging as flog, render_template, request
+from flask import current_app, logging as flog, render_template, request
+from werkzeug.exceptions import HTTPException
 
 flog.default_handler.setFormatter(
     logging.Formatter(
@@ -45,12 +47,42 @@ import flask_migrate
 migrate = flask_migrate.Migrate()
 
 
-def internal_server_error(e):
+def _api_internal_error():
+    error_id = uuid.uuid4().hex[:12]
+    current_app.logger.exception("[error_id=%s] Unhandled exception", error_id)
+    return {
+        "status": "error",
+        "message": "Internal server error",
+        "error_id": error_id,
+    }, 500
+
+
+def _html_internal_error():
     return render_template("500.j2", theme=request.cookies.get("theme", "light")), 500
+
+
+def internal_server_error(e):
+    # A code-specific 500 handler wins over the Exception handler for
+    # InternalServerError (abort(500), after_request failures).
+    if request.path.startswith("/api/"):
+        return _api_internal_error()
+    return _html_internal_error()
 
 
 def page_not_found_error(e):
     return render_template("404.j2", theme=request.cookies.get("theme", "light")), 404
+
+
+def handle_unexpected_error(e):
+    """Last-resort handler so an uncaught exception cannot reach the client."""
+    if isinstance(e, HTTPException):
+        return e
+
+    if request.path.startswith("/api/"):
+        return _api_internal_error()
+    error_id = uuid.uuid4().hex[:12]
+    current_app.logger.exception("[error_id=%s] Unhandled exception", error_id)
+    return _html_internal_error()
 
 
 def create_app(test_config=None):
@@ -304,6 +336,10 @@ def create_app(test_config=None):
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "no-referrer"
         return resp
+
+    app.register_error_handler(Exception, handle_unexpected_error)
+    app.register_error_handler(500, internal_server_error)
+    app.register_error_handler(404, page_not_found_error)
 
     shkeeper_initialized.set()
 
