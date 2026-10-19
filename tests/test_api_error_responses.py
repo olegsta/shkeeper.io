@@ -8,7 +8,7 @@ from unittest import mock
 from flask import Flask
 from werkzeug.exceptions import abort
 
-from shkeeper import handle_unexpected_error
+from shkeeper import handle_unexpected_error, internal_server_error
 from shkeeper.api_v1 import (
     decrypt_key,
     get_crypto_quote,
@@ -104,6 +104,24 @@ class TestApiErrorResponses(unittest.TestCase):
         self.assertEqual(body["message"], "Malformed quote request")
         _assert_no_leak(self, body, "not-a-number")
 
+    def test_quote_non_object_json_is_400(self) -> None:
+        fake = _EnabledCrypto()
+        for raw in ("null", "[]", '"usd"'):
+            with self.app.test_request_context(
+                "/api/v1/BTC/quote",
+                method="POST",
+                data=raw,
+                content_type="application/json",
+            ):
+                with mock.patch.dict(
+                    "shkeeper.api_v1.Crypto.instances", {"BTC": fake}, clear=True
+                ):
+                    body, status = _view(get_crypto_quote)("BTC")
+
+            self.assertEqual(status, 400)
+            self.assertEqual(body["message"], "Malformed quote request")
+            self.assertNotIn("traceback", body)
+
     def test_payoutnotify_wrong_key_does_not_leak(self) -> None:
         with self.app.test_request_context(
             "/api/v1/AAAA/payoutnotify",
@@ -185,6 +203,7 @@ class TestApiErrorResponses(unittest.TestCase):
             raise RuntimeError(secret)
 
         self.app.register_error_handler(Exception, handle_unexpected_error)
+        self.app.register_error_handler(500, internal_server_error)
         response = self.app.test_client().get("/api/v1/boom")
         payload = response.get_json()
 
@@ -199,9 +218,25 @@ class TestApiErrorResponses(unittest.TestCase):
             abort(404)
 
         self.app.register_error_handler(Exception, handle_unexpected_error)
+        self.app.register_error_handler(500, internal_server_error)
         response = self.app.test_client().get("/api/v1/missing")
         self.assertEqual(response.status_code, 404)
         self.assertNotIn("Traceback (most recent call last)", response.get_data(as_text=True))
+
+    def test_api_abort_500_returns_json_error_id(self) -> None:
+        @self.app.get("/api/v1/fail")
+        def fail():
+            abort(500)
+
+        self.app.register_error_handler(Exception, handle_unexpected_error)
+        self.app.register_error_handler(500, internal_server_error)
+        response = self.app.test_client().get("/api/v1/fail")
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(payload["message"], "Internal server error")
+        _assert_no_leak(self, payload, "InternalServerError")
+        self.assertNotIn("<html", response.get_data(as_text=True).lower())
 
 
 if __name__ == "__main__":

@@ -198,6 +198,8 @@ def get_crypto_quote(crypto_name):
     req = None
     try:
         req = request.get_json(force=True)
+        if not isinstance(req, dict):
+            raise ValueError("request body must be a JSON object")
         fiat = req.get("fiat")
         amount_str = req.get("amount")
 
