@@ -330,10 +330,15 @@ def add_transaction(crypto_name):
 @blp_v1.post("/<string:crypto_name>/payout_destinations")
 @login_required
 def payout_destinations(crypto_name):
-    """Manage payout destinations (add/delete/list)."""
+    """Manage payout destinations (add/delete/list). Admin only."""
     req = request.get_json(force=True)
+    if not isinstance(req, dict) or "action" not in req:
+        return {"status": "error", "message": "action required"}, 400
+    action = req["action"]
+    if action not in ("add", "delete", "list"):
+        return {"status": "error", "message": "Unknown action"}, 400
 
-    if req["action"] == "add":
+    if action == "add":
         require_admin()
         if not PayoutDestination.query.filter_by(
             crypto=crypto_name, addr=req["daddress"]
@@ -344,19 +349,18 @@ def payout_destinations(crypto_name):
             db.session.add(pd)
             db.session.commit()
         return {"status": "success"}
-    elif req["action"] == "delete":
+    elif action == "delete":
         require_admin()
         PayoutDestination.query.filter_by(addr=req["daddress"]).delete()
         db.session.commit()
         return {"status": "success"}
-    elif req["action"] == "list":
+    else:
+        require_admin()  # payout destinations are operator infrastructure
         pd = PayoutDestination.query.filter_by(crypto=crypto_name).all()
         return {
             "status": "success",
             "payout_destinations": [{"addr": p.addr, "comment": p.comment} for p in pd],
         }
-    else:
-        return {"status": "error", "message": "Unknown action"}
 
 
 @blp_v1.post("/<string:crypto_name>/autopayout")
