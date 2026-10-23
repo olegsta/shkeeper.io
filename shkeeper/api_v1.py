@@ -36,7 +36,7 @@ from shkeeper.services.tenancy import (
     require_default_store,
     store_owner_wallet,
 )
-from shkeeper.services.store_service import get_store_wallet
+from shkeeper.services.store_service import get_store_wallet, mint_store_api_key
 from shkeeper.services.multistore import is_multistore_backend, store_wallet_is_ready
 from shkeeper.callback import send_notification, send_unconfirmed_notification
 from shkeeper.utils import format_decimal
@@ -252,20 +252,20 @@ def payment_gateway_set_status(crypto_name):
 @blp_v1.post("/<string:crypto_name>/payment-gateway/token")
 @login_required
 def payment_gateway_set_token(crypto_name):
-    """Set shared API token for all cryptos."""
-    req = request.get_json(force=True)
+    """Mint a new API token. A client-supplied token is ignored."""
+    token = mint_store_api_key()
     if store_owner_wallet(crypto_name):
-        g.current_store.api_key = req["token"]
+        g.current_store.api_key = token
         db.session.commit()
-        return {"status": "success"}
+        return {"status": "success", "token": token}
     require_admin()
     for crypto in Crypto.instances.values():
-        crypto.wallet.apikey = req["token"]
+        crypto.wallet.apikey = token
     from shkeeper.services.store_service import ensure_default_store
 
-    ensure_default_store().api_key = req["token"]
+    ensure_default_store().api_key = token
     db.session.commit()
-    return {"status": "success"}
+    return {"status": "success", "token": token}
 
 @blp_v1.get("/settings/<string:key>")
 @login_required
