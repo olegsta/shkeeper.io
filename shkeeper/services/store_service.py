@@ -30,6 +30,11 @@ from shkeeper.services.multistore import (
 )
 
 DEFAULT_ADMIN_STORE_ID = 1
+API_KEY_BYTES = 32  # 256 bits
+
+
+def generate_api_key() -> str:
+    return secrets.token_urlsafe(API_KEY_BYTES)
 
 
 def ensure_default_store():
@@ -118,17 +123,18 @@ def _legacy_api_key():
     wallet = Wallet.query.filter(Wallet.apikey.isnot(None)).first()
     if wallet and wallet.apikey:
         return wallet.apikey
-    return app.config.get("SUGGESTED_WALLET_APIKEY") or secrets.token_urlsafe(16)
+    return app.config.get("SUGGESTED_WALLET_APIKEY") or generate_api_key()
 
 
 def resolve_store_by_api_key(api_key: str):
+    # A missing or short key must never match, including api_key="".
+    if not api_key or len(api_key) < 16:
+        return None
     store = Store.query.filter_by(api_key=api_key, status=StoreStatus.ACTIVE).first()
     if store:
         return store
-    wallet = Wallet.query.filter_by(apikey=api_key).first()
-    if wallet:
-        default = ensure_default_store()
-        return default
+    if Wallet.query.filter_by(apikey=api_key).first():
+        return ensure_default_store()
     return None
 
 def _coerce_fee_percent(value):
@@ -150,7 +156,7 @@ def create_store(name: str, platform_fee_percent=Decimal("0")):
     platform_fee_percent = _coerce_fee_percent(platform_fee_percent)
     store = Store(
         name=name,
-        api_key=secrets.token_urlsafe(24),
+        api_key=generate_api_key(),
         platform_fee_percent=platform_fee_percent,
         status=StoreStatus.ACTIVE,
         is_default=False,

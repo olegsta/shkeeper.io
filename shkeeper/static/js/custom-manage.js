@@ -735,31 +735,20 @@ function paymentGatwey()
     }
     function APIToken()
     {
-      const tokenLength = 16;
       let tokenHTML = document.getElementById("API-token");
       let generateBtn = document.getElementById("generateAPIBtn");
-      function generateAPIToken(length)
-      {
-        var result           = '';
-        var characters       = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_';
-        var charactersLength = characters.length;
-        for ( var i = 0; i < length; i++ ) {
-          result += characters.charAt(Math.floor(Math.random() * charactersLength));
-        }
-        return result;
-      }
       function sendAPIToken()
       {
-        let token = generateAPIToken(tokenLength);
         const httpToken = new XMLHttpRequest();
-        httpToken.open("POST","/api/v1/" + crypto + "/payment-gateway/token");
-        httpToken.send(JSON.stringify({"token":token}));
+        httpToken.open("POST", "/api/v1/" + crypto + "/payment-gateway/token");
+        httpToken.setRequestHeader("Content-Type", "application/json");
+        httpToken.send("{}");
         httpToken.onload = function()
         {
-          if(checkAnswer(this))
+          let data = checkAnswer(this);
+          if(data)
           {
-            tokenHTML.innerHTML = token;
-            console.log("Token generated.");
+            tokenHTML.textContent = data.token;
           }
         }
       }
