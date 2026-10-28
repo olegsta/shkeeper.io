@@ -23,3 +23,33 @@ jobs:
 
       - name: Run tests
         run: PYTHONPATH=. python -m pytest tests/ -v
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      # Remaining Flask and Werkzeug advisories are fixed only in Flask 3.1.3
+      # and Werkzeug 3.x. flask-smorest 0.41 and Flask-SQLAlchemy 2.5 both
+      # require Flask and Werkzeug <3, so those upgrades stay with the
+      # separate migration. New advisories still fail this job.
+      - name: Audit dependencies
+        run: |
+          pip-audit -r requirements.txt --strict \
+            --ignore-vuln CVE-2026-27205 \
+            --ignore-vuln CVE-2024-34069 \
+            --ignore-vuln CVE-2024-49766 \
+            --ignore-vuln CVE-2024-49767 \
+            --ignore-vuln CVE-2025-66221 \
+            --ignore-vuln CVE-2026-21860 \
+            --ignore-vuln CVE-2026-27199 \
+            --ignore-vuln CVE-2026-102598
