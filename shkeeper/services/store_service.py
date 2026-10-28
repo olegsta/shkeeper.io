@@ -31,10 +31,17 @@ from shkeeper.services.multistore import (
 
 DEFAULT_ADMIN_STORE_ID = 1
 API_KEY_BYTES = 32  # 256 bits
+# Stored keys shorter than this must not authenticate. Empty and one-character
+# values would otherwise turn the API key check into an open credential.
+MIN_STORE_API_KEY_LENGTH = 16
 
 
 def generate_api_key() -> str:
     return secrets.token_urlsafe(API_KEY_BYTES)
+
+
+def mint_store_api_key() -> str:
+    return generate_api_key()
 
 
 def ensure_default_store():
@@ -127,8 +134,8 @@ def _legacy_api_key():
 
 
 def resolve_store_by_api_key(api_key: str):
-    # A missing or short key must never match, including api_key="".
-    if not api_key or len(api_key) < 16:
+    # A missing, non-string, or short key must never match, including api_key="".
+    if not isinstance(api_key, str) or len(api_key) < MIN_STORE_API_KEY_LENGTH:
         return None
     store = Store.query.filter_by(api_key=api_key, status=StoreStatus.ACTIVE).first()
     if store:

@@ -737,20 +737,23 @@ function paymentGatwey()
     {
       let tokenHTML = document.getElementById("API-token");
       let generateBtn = document.getElementById("generateAPIBtn");
-      function sendAPIToken()
+      function sendAPIToken(event)
       {
+        if (event) {
+          event.preventDefault();
+        }
         const httpToken = new XMLHttpRequest();
         httpToken.open("POST", "/api/v1/" + crypto + "/payment-gateway/token");
         httpToken.setRequestHeader("Content-Type", "application/json");
-        httpToken.send("{}");
         httpToken.onload = function()
         {
           let data = checkAnswer(this);
-          if(data)
+          if(data && data.token)
           {
             tokenHTML.textContent = data.token;
           }
         }
+        httpToken.send(JSON.stringify({}));
       }
       function checkAnswer(response)
       {
