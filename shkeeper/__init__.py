@@ -12,8 +12,42 @@ flog.default_handler.setFormatter(
     )
 )
 
-from flask import Flask
+from flask import Flask, flash, redirect
+from flask_limiter import Limiter
+from flask_limiter.errors import RateLimitExceeded
+from flask_limiter.util import get_remote_address
 import requests
+
+
+def _exempt_chain_notify():
+    """Coin services on localhost notify once per tx. A shared 600/hour cap would drop deposits."""
+    path = request.path or ""
+    return path.startswith("/api/v1/walletnotify/") or path.startswith(
+        "/api/v1/payoutnotify/"
+    )
+
+
+# memory:// matches a single gunicorn worker. With more than one worker, set
+# RATELIMIT_STORAGE_URI to a shared Redis so every worker uses the same counters.
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["600 per hour"],
+    default_limits_exempt_when=_exempt_chain_notify,
+    storage_uri=os.environ.get("RATELIMIT_STORAGE_URI", "memory://"),
+    strategy="fixed-window",
+    in_memory_fallback=["600 per hour"],
+    in_memory_fallback_enabled=True,
+)
+
+
+def rate_limit_exceeded(_err):
+    message = "Too many attempts. Please try again later."
+    if request.path.startswith("/api/") or "X-Shkeeper-Api-Key" in request.headers:
+        return {"status": "error", "message": message}, 429
+    flash(message)
+    if request.method == "POST":
+        return redirect(request.path)
+    return message, 429
 
 from shkeeper.wallet_encryption import WalletEncryptionRuntimeStatus
 
@@ -189,6 +223,9 @@ def create_app(test_config=None):
 
     db.init_app(app)
     migrate.init_app(app, db)
+    limiter.init_app(app)
+    app.register_error_handler(RateLimitExceeded, rate_limit_exceeded)
+
     with app.app_context():
         # Create tables according to models
         from .models import (
