@@ -21,7 +21,7 @@ from werkzeug.wrappers import Response
 from flask import current_app as app
 import prometheus_client
 
-from shkeeper import db
+from shkeeper import db, limiter
 from shkeeper.auth import login_required, metrics_basic_auth
 from shkeeper.wallet_encryption import (
     wallet_encryption,
@@ -861,6 +861,7 @@ def show_unlock():
 
 
 @bp_wallet.post("/unlock")
+@limiter.limit("10 per 15 minutes")
 @login_required
 def process_unlock():
     require_admin()
