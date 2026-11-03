@@ -19,24 +19,16 @@ from flask_limiter.util import get_remote_address
 import requests
 
 
-def _exempt_chain_notify():
-    """Coin services on localhost notify once per tx. A shared 600/hour cap would drop deposits."""
-    path = request.path or ""
-    return path.startswith("/api/v1/walletnotify/") or path.startswith(
-        "/api/v1/payoutnotify/"
-    )
-
-
+# No default_limits: a global cap is shared by every coin on /status and
+# /get-rate and blanks the wallets page. Limits live only on login, 2FA,
+# and unlock. API-key routes are not capped: one IP serves every store.
 # memory:// matches a single gunicorn worker. With more than one worker, set
 # RATELIMIT_STORAGE_URI to a shared Redis so every worker uses the same counters.
 limiter = Limiter(
     key_func=get_remote_address,
-    default_limits=["600 per hour"],
-    default_limits_exempt_when=_exempt_chain_notify,
     storage_uri=os.environ.get("RATELIMIT_STORAGE_URI", "memory://"),
     strategy="fixed-window",
-    in_memory_fallback=["600 per hour"],
-    in_memory_fallback_enabled=True,
+    in_memory_fallback_enabled=False,
 )
 
 

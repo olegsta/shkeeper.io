@@ -26,6 +26,7 @@ class TestAuthRateLimit(unittest.TestCase):
         limiter.init_app(app)
         app.register_blueprint(bp)
         app.add_url_rule("/api/v1/probe", view_func=probe)
+        app.add_url_rule("/unlimited", view_func=lambda: {"status": "success"})
         app.register_error_handler(RateLimitExceeded, rate_limit_exceeded)
         cls.app = app
 
@@ -33,13 +34,15 @@ class TestAuthRateLimit(unittest.TestCase):
         limiter.reset()
         self.client = self.app.test_client()
 
-    def test_api_key_guessing_is_rate_limited(self):
-        for _ in range(120):
+    def test_api_key_routes_are_not_rate_limited(self):
+        for _ in range(130):
             response = self.client.get("/api/v1/probe")
             self.assertEqual(response.status_code, 200)
-        blocked = self.client.get("/api/v1/probe")
-        self.assertEqual(blocked.status_code, 429)
-        self.assertEqual(blocked.get_json()["status"], "error")
+
+    def test_routes_without_a_limit_stay_open(self):
+        for _ in range(130):
+            response = self.client.get("/unlimited")
+            self.assertEqual(response.status_code, 200)
 
     def test_unlock_route_carries_a_tight_limit(self):
         from shkeeper.wallet import process_unlock
