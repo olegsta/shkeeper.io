@@ -193,7 +193,7 @@ def api_key_required(view):
         return {"status": "error", "message": "Bad API key"}
 
     # Apply after wraps() so the limit is keyed to the real view, not the
-    # shared wrapper. Explicit limits replace the 600/hour default.
+    # shared wrapper.
     return limiter.limit("120 per minute")(wrapped_view)
 
 
