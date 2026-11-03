@@ -252,20 +252,22 @@ def payment_gateway_set_status(crypto_name):
 @blp_v1.post("/<string:crypto_name>/payment-gateway/token")
 @login_required
 def payment_gateway_set_token(crypto_name):
-    """Set shared API token for all cryptos."""
-    req = request.get_json(force=True)
+    """Rotate the API token. The value is generated server-side and returned once."""
+    from shkeeper.services.store_service import ensure_default_store, generate_api_key
+
+    token = generate_api_key()
     if store_owner_wallet(crypto_name):
-        g.current_store.api_key = req["token"]
+        g.current_store.api_key = token
         db.session.commit()
-        return {"status": "success"}
+        app.logger.info("API key rotated for store id=%s", g.current_store.id)
+        return {"status": "success", "token": token}
     require_admin()
     for crypto in Crypto.instances.values():
-        crypto.wallet.apikey = req["token"]
-    from shkeeper.services.store_service import ensure_default_store
-
-    ensure_default_store().api_key = req["token"]
+        crypto.wallet.apikey = token
+    ensure_default_store().api_key = token
     db.session.commit()
-    return {"status": "success"}
+    app.logger.info("Global API key rotated by admin user id=%s", g.user.id)
+    return {"status": "success", "token": token}
 
 @blp_v1.get("/settings/<string:key>")
 @login_required
