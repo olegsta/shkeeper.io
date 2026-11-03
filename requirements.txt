@@ -4,6 +4,8 @@ Flask==2.2.5
 Flask-WTF==1.2.1
 Werkzeug==2.3.8
 Flask-APScheduler==1.12.4
+# 1.12.4 imports six without declaring it. APScheduler 3.11 no longer pulls it in.
+six==1.17.0
 Flask-Session==0.4.0
 Flask-SQLAlchemy==2.5.1
 gunicorn==25.1.0
