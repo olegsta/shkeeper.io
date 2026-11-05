@@ -672,7 +672,9 @@ function paymentGatwey()
             if(status == activeStatus)
             {
               let status = document.getElementById('API-status');
-              APIswitcher.innerText = unactiveStatus;
+              if (APIswitcher) {
+                APIswitcher.innerText = unactiveStatus;
+              }
               status.classList.add('API-status-active');
               status.classList.remove('API-status-inactive');
               status.innerHTML = "Active";
@@ -680,7 +682,9 @@ function paymentGatwey()
             else
             {
               let status = document.getElementById('API-status');
-              APIswitcher.innerText = activeStatus;
+              if (APIswitcher) {
+                APIswitcher.innerText = activeStatus;
+              }
               status.classList.add('API-status-inactive');
               status.classList.remove('API-status-active');
               status.innerHTML = "Inactive";
@@ -712,7 +716,9 @@ function paymentGatwey()
                 let data = checkAnswer(this);
                 if(data != false)
                 {
-                    APIswitcher.innerText = statusDescr;
+                    if (APIswitcher) {
+                        APIswitcher.innerText = statusDescr;
+                    }
                     setStatus(statusDescr);
                 }
             }
@@ -731,7 +737,9 @@ function paymentGatwey()
         }
 
         window.addEventListener('DOMContentLoaded',getStatus);
-        document.getElementById("API-switcher").addEventListener('click',switchAPIStatus);
+        if (APIswitcher) {
+            APIswitcher.addEventListener('click',switchAPIStatus);
+        }
     }
     function APIToken()
     {
