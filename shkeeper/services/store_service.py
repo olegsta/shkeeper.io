@@ -27,6 +27,14 @@ from shkeeper.services.multistore import (
 )
 
 DEFAULT_ADMIN_STORE_ID = 1
+# Stored keys shorter than this must not authenticate. Empty and one-character
+# values would otherwise turn the API key check into an open credential.
+MIN_STORE_API_KEY_LENGTH = 16
+
+
+def mint_store_api_key() -> str:
+    # 24 bytes is 32 unpadded url-safe characters, above the length floor.
+    return secrets.token_urlsafe(24)
 
 
 def ensure_default_store():
@@ -119,6 +127,8 @@ def _legacy_api_key():
 
 
 def resolve_store_by_api_key(api_key: str):
+    if not isinstance(api_key, str) or len(api_key) < MIN_STORE_API_KEY_LENGTH:
+        return None
     store = Store.query.filter_by(api_key=api_key, status=StoreStatus.ACTIVE).first()
     if store:
         return store
@@ -138,7 +148,7 @@ def create_store(name: str, platform_fee_percent=Decimal("0")):
         raise ValueError("Invalid platform fee percent") from exc
     store = Store(
         name=name,
-        api_key=secrets.token_urlsafe(24),
+        api_key=mint_store_api_key(),
         platform_fee_percent=platform_fee_percent,
         status=StoreStatus.ACTIVE,
         is_default=False,

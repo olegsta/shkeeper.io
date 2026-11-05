@@ -672,7 +672,9 @@ function paymentGatwey()
             if(status == activeStatus)
             {
               let status = document.getElementById('API-status');
-              APIswitcher.innerText = unactiveStatus;
+              if (APIswitcher) {
+                APIswitcher.innerText = unactiveStatus;
+              }
               status.classList.add('API-status-active');
               status.classList.remove('API-status-inactive');
               status.innerHTML = "Active";
@@ -680,7 +682,9 @@ function paymentGatwey()
             else
             {
               let status = document.getElementById('API-status');
-              APIswitcher.innerText = activeStatus;
+              if (APIswitcher) {
+                APIswitcher.innerText = activeStatus;
+              }
               status.classList.add('API-status-inactive');
               status.classList.remove('API-status-active');
               status.innerHTML = "Inactive";
@@ -712,7 +716,9 @@ function paymentGatwey()
                 let data = checkAnswer(this);
                 if(data != false)
                 {
-                    APIswitcher.innerText = statusDescr;
+                    if (APIswitcher) {
+                        APIswitcher.innerText = statusDescr;
+                    }
                     setStatus(statusDescr);
                 }
             }
@@ -731,37 +737,31 @@ function paymentGatwey()
         }
 
         window.addEventListener('DOMContentLoaded',getStatus);
-        document.getElementById("API-switcher").addEventListener('click',switchAPIStatus);
+        if (APIswitcher) {
+            APIswitcher.addEventListener('click',switchAPIStatus);
+        }
     }
     function APIToken()
     {
-      const tokenLength = 16;
       let tokenHTML = document.getElementById("API-token");
       let generateBtn = document.getElementById("generateAPIBtn");
-      function generateAPIToken(length)
+      function sendAPIToken(event)
       {
-        var result           = '';
-        var characters       = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_';
-        var charactersLength = characters.length;
-        for ( var i = 0; i < length; i++ ) {
-          result += characters.charAt(Math.floor(Math.random() * charactersLength));
+        if (event) {
+          event.preventDefault();
         }
-        return result;
-      }
-      function sendAPIToken()
-      {
-        let token = generateAPIToken(tokenLength);
         const httpToken = new XMLHttpRequest();
         httpToken.open("POST","/api/v1/" + crypto + "/payment-gateway/token");
-        httpToken.send(JSON.stringify({"token":token}));
         httpToken.onload = function()
         {
-          if(checkAnswer(this))
+          let data = checkAnswer(this);
+          if(data && data["token"])
           {
-            tokenHTML.innerHTML = token;
+            tokenHTML.textContent = data["token"];
             console.log("Token generated.");
           }
         }
+        httpToken.send(JSON.stringify({}));
       }
       function checkAnswer(response)
       {
