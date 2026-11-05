@@ -2,11 +2,12 @@ import functools
 import os
 import base64
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pyotp
 import segno
 from flask import Blueprint
+from flask_limiter.util import get_remote_address
 # from flask_smorest import Blueprint as SmorestBlueprint
 from flask import flash
 from flask import g
@@ -20,7 +21,7 @@ from werkzeug.security import check_password_hash
 from werkzeug.security import generate_password_hash
 
 from shkeeper.models import User, Wallet, UserRole, Store, StoreStatus
-from shkeeper import db
+from shkeeper import db, limiter
 from shkeeper.services.store_service import resolve_store_by_api_key
 from shkeeper.services.tenancy import is_admin_user
 from shkeeper.wallet_encryption import ensure_wallet_unlocked
@@ -115,6 +116,61 @@ def login_required(view):
     return wrapped_view
 
 
+_MAX_2FA_ATTEMPTS = 5
+_2FA_LOCKOUT = timedelta(minutes=15)
+_2FA_LOCK_SECONDS = int(_2FA_LOCKOUT.total_seconds())
+
+
+def _twofa_attempts_key(user_id) -> str:
+    return f"shkeeper-2fa-attempts:{user_id}"
+
+
+def _twofa_lock_key(user_id) -> str:
+    return f"shkeeper-2fa-lock:{user_id}"
+
+
+def _twofa_lock_active(user) -> bool:
+    """True while this account is locked out of the second factor.
+
+    The counter lives in the rate-limit store (Redis when
+    RATELIMIT_STORAGE_URI points there). login() clears the session after a
+    correct password, so a session counter would let an attacker re-authenticate
+    and refresh the pending-2FA window.
+    """
+    return limiter.storage.get(_twofa_lock_key(user.id)) > 0
+
+
+def _register_twofa_failure(user) -> bool:
+    # INCR is atomic in both the in-memory store and Redis, so parallel
+    # guesses cannot share one counter value. Expiry is set on the first hit.
+    storage = limiter.storage
+    attempts = storage.incr(_twofa_attempts_key(user.id), _2FA_LOCK_SECONDS)
+    app.logger.warning(
+        "2FA failure %s/%s for user id=%s from %s",
+        attempts,
+        _MAX_2FA_ATTEMPTS,
+        user.id,
+        get_remote_address(),
+    )
+    if attempts < _MAX_2FA_ATTEMPTS:
+        return False
+    lock_key = _twofa_lock_key(user.id)
+    storage.clear(lock_key)
+    storage.incr(lock_key, _2FA_LOCK_SECONDS)
+    storage.clear(_twofa_attempts_key(user.id))
+    return True
+
+
+def _clear_twofa_failures(user):
+    storage = limiter.storage
+    storage.clear(_twofa_attempts_key(user.id))
+    storage.clear(_twofa_lock_key(user.id))
+
+
+def _login_rate_key():
+    return f"{get_remote_address()}:{request.form.get('name', '')}"
+
+
 def api_key_required(view):
     @functools.wraps(view)
     def wrapped_view(**kwargs):
@@ -136,7 +192,9 @@ def api_key_required(view):
             return view(**kwargs)
         return {"status": "error", "message": "Bad API key"}
 
-    return wrapped_view
+    # Apply after wraps() so the limit is keyed to the real view, not the
+    # shared wrapper.
+    return limiter.limit("120 per minute")(wrapped_view)
 
 
 @bp.before_app_request
@@ -177,6 +235,12 @@ def load_logged_in_user():
 
 
 @bp.route("/login", methods=("GET", "POST"))
+@limiter.limit(
+    "10 per 15 minutes",
+    methods=["POST"],
+    key_func=_login_rate_key,
+)
+@limiter.limit("60 per hour", methods=["POST"])
 def login():
     """Log in a registered user by adding the user id to the session."""
     if request.method == "POST":
@@ -200,6 +264,10 @@ def login():
         if error is None:
             # Check if 2FA is enabled
             if user.totp_enabled:
+                if _twofa_lock_active(user):
+                    session.clear()
+                    flash("Too many invalid codes. Please log in again later.")
+                    return render_template("auth/login.j2")
                 # Store user temporarily for 2FA verification
                 session.clear()
                 session["pending_user_id"] = user.id
@@ -242,6 +310,7 @@ def logout():
 
 
 @bp.route("/2fa/verify", methods=("GET", "POST"))
+@limiter.limit("20 per 15 minutes", methods=["POST"])
 def verify_2fa():
     """Verify 2FA token after password authentication."""
     pending_user_id = session.get("pending_user_id")
@@ -249,22 +318,25 @@ def verify_2fa():
         flash("Please log in first.")
         return redirect(url_for("auth.login"))
 
+    user = User.query.get(pending_user_id)
+    if not user:
+        session.clear()
+        return redirect(url_for("auth.login"))
+
+    if _twofa_lock_active(user):
+        session.clear()
+        flash("Too many invalid codes. Please log in again later.")
+        return redirect(url_for("auth.login"))
+
     # Check session timeout (5 minutes)
     pending_time_str = session.get("pending_user_time")
     if pending_time_str:
-        from datetime import datetime, timedelta
-
         pending_time = datetime.fromisoformat(pending_time_str)
         if datetime.now() - pending_time > timedelta(minutes=5):
             session.pop("pending_user_id", None)
             session.pop("pending_user_time", None)
             flash("Session expired. Please log in again.")
             return redirect(url_for("auth.login"))
-
-    user = User.query.get(pending_user_id)
-    if not user:
-        session.clear()
-        return redirect(url_for("auth.login"))
 
     if request.method == "POST":
         token = request.form.get("token", "").replace(" ", "").replace("-", "")
@@ -282,12 +354,19 @@ def verify_2fa():
             verified = user.verify_totp(token)
 
         if verified:
+            _clear_twofa_failures(user)
             session.pop("pending_user_id", None)
             session.pop("pending_user_time", None)
             session["user_id"] = user.id
+            app.logger.info("2FA success for user id=%s", user.id)
             return redirect(url_for("wallet.show_unlock"))
-        else:
-            flash("Invalid authentication code. Please try again.")
+
+        if _register_twofa_failure(user):
+            session.pop("pending_user_id", None)
+            session.pop("pending_user_time", None)
+            flash("Too many invalid codes. Please log in again later.")
+            return redirect(url_for("auth.login"))
+        flash("Invalid authentication code. Please try again.")
 
     return render_template("auth/verify-2fa.j2")
 
