@@ -34,13 +34,15 @@ class TestAuthRateLimit(unittest.TestCase):
         limiter.reset()
         self.client = self.app.test_client()
 
-    def test_api_key_guessing_is_rate_limited(self):
-        for _ in range(120):
+    def test_api_key_routes_are_not_rate_limited(self):
+        for _ in range(130):
             response = self.client.get("/api/v1/probe")
             self.assertEqual(response.status_code, 200)
-        blocked = self.client.get("/api/v1/probe")
-        self.assertEqual(blocked.status_code, 429)
-        self.assertEqual(blocked.get_json()["status"], "error")
+
+    def test_routes_without_a_limit_stay_open(self):
+        for _ in range(130):
+            response = self.client.get("/unlimited")
+            self.assertEqual(response.status_code, 200)
 
     def test_routes_without_a_limit_stay_open(self):
         for _ in range(130):

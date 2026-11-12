@@ -23,7 +23,7 @@ import requests
 
 # No default_limits: a global cap is shared by every coin on /status and
 # /get-rate and blanks the wallets page. Limits live only on login, 2FA,
-# unlock, and API-key checks.
+# and unlock. API-key routes are not capped: one IP serves every store.
 # memory:// matches a single gunicorn worker. With more than one worker, set
 # RATELIMIT_STORAGE_URI to a shared Redis so every worker uses the same counters.
 limiter = Limiter(
