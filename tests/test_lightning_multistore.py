@@ -77,58 +77,58 @@ class TestLnbitsWalletBalance(_AppContextTestCase):
 
 
 class TestLnbitsWalletCreate(_AppContextTestCase):
-    def test_creates_user_then_wallet(self) -> None:
+    def test_creates_wallet_on_the_logged_in_account(self) -> None:
         ln = _bare_lightning()
         calls = []
 
-        def api(method, path, key, payload=None):
-            calls.append((method, path, payload))
-            if method == "POST" and path == "/users/api/v1/user":
-                return 201, {"id": "user-2"}
-            if method == "GET" and path.endswith("/wallet"):
-                return 200, []
-            if method == "POST" and path.endswith("/wallet"):
-                return 201, {"id": "wal-2", "adminkey": "adm", "inkey": "inv"}
+        def api(method, path, key, payload=None, account=False):
+            calls.append((method, path, payload, account))
+            if method == "GET" and path.startswith("/api/v1/wallet/paginated"):
+                return 200, {"data": []}
+            if method == "POST" and path == "/api/v1/wallet":
+                return 201, {
+                    "id": "wal-2",
+                    "user": "user-1",
+                    "name": "shkeeper-store-2",
+                    "adminkey": "adm",
+                    "inkey": "inv",
+                }
             raise AssertionError((method, path))
 
         ln._lnbits_api = api
-        with mock.patch.object(
-            BitcoinLightning,
-            "lnbits_admin_apikey",
-            new_callable=mock.PropertyMock,
-            return_value="admin",
-        ):
-            created = ln._create_lnbits_wallet(2)
+        created = ln._create_lnbits_wallet(2)
 
-        self.assertEqual(created["user_id"], "user-2")
+        self.assertEqual(created["user_id"], "user-1")
+        self.assertEqual(created["wallet_id"], "wal-2")
         self.assertEqual(created["admin_key"], "adm")
         self.assertEqual(created["invoice_key"], "inv")
-        self.assertEqual(calls[0][2]["username"], "shkeeper-store-2")
-        self.assertEqual(calls[0][2]["password"], calls[0][2]["password_repeat"])
+        self.assertTrue(calls[0][3])
+        self.assertTrue(calls[1][3])
+        self.assertEqual(calls[1][2], {"name": "shkeeper-store-2"})
+        self.assertFalse(any("/users/" in path for _, path, _, _ in calls))
 
     def test_reuses_existing_named_wallet(self) -> None:
         ln = _bare_lightning()
 
-        def api(method, path, key, payload=None):
-            if method == "POST" and path == "/users/api/v1/user":
-                return 400, {"detail": "exists"}
-            if method == "GET" and path.startswith("/users/api/v1/user?"):
-                return 200, {"data": [{"id": "user-2", "username": "shkeeper-store-2"}]}
-            if method == "GET" and path.endswith("/wallet"):
-                return 200, [
-                    {"id": "wal-2", "name": "shkeeper-store-2", "adminkey": "adm", "inkey": "inv"}
-                ]
+        def api(method, path, key, payload=None, account=False):
+            if method == "GET" and path.startswith("/api/v1/wallet/paginated"):
+                return 200, {
+                    "data": [
+                        {
+                            "id": "wal-2",
+                            "user": "user-1",
+                            "name": "shkeeper-store-2",
+                            "adminkey": "adm",
+                            "inkey": "inv",
+                        }
+                    ]
+                }
             raise AssertionError((method, path))
 
         ln._lnbits_api = api
-        with mock.patch.object(
-            BitcoinLightning,
-            "lnbits_admin_apikey",
-            new_callable=mock.PropertyMock,
-            return_value="admin",
-        ):
-            created = ln._create_lnbits_wallet(2)
+        created = ln._create_lnbits_wallet(2)
         self.assertEqual(created["wallet_id"], "wal-2")
+        self.assertEqual(created["user_id"], "user-1")
 
 
 class TestLightningPayout(_AppContextTestCase):
