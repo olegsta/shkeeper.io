@@ -225,15 +225,60 @@ class BitcoinLightning(Crypto):
     def _store_username(self, store_id: int) -> str:
         return f"shkeeper-store-{store_id}"
 
+    def _lnbits_admin_token(self, force: bool = False) -> str:
+        now = time()
+        token = getattr(self, "_admin_token", None)
+        if token and not force and now < getattr(self, "_admin_token_exp", 0):
+            return token
+        username = environ.get("LNBITS_ADMIN_USER")
+        password = environ.get("LNBITS_ADMIN_PASSWORD")
+        if not username or not password:
+            raise RuntimeError(
+                "LNBITS_ADMIN_USER or LNBITS_ADMIN_PASSWORD is not set"
+            )
+        response = requests.post(
+            f"{self.LNBITS_URL}/api/v1/auth",
+            json={"username": username, "password": password},
+            timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+            verify=False,
+        )
+        try:
+            body = response.json()
+        except Exception:
+            body = {"detail": response.text}
+        access_token = body.get("access_token") if isinstance(body, dict) else None
+        if response.status_code not in (200, 201) or not access_token:
+            raise RuntimeError(
+                f"LNbits admin login failed: {self._lnbits_error(body)}"
+            )
+        self._admin_token = access_token
+        self._admin_token_exp = now + 20 * 60
+        return access_token
+
     def _lnbits_api(self, method: str, path: str, api_key: str, payload=None):
+        headers = {"Content-Type": "application/json"}
+        if path.startswith("/users/"):
+            headers["Authorization"] = f"Bearer {self._lnbits_admin_token()}"
+        elif api_key:
+            headers["X-API-KEY"] = api_key.strip()
         response = requests.request(
             method,
             f"{self.LNBITS_URL}{path}",
-            headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+            headers=headers,
             json=payload,
             timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
             verify=False,
         )
+        if path.startswith("/users/") and response.status_code == 401:
+            headers["Authorization"] = f"Bearer {self._lnbits_admin_token(force=True)}"
+            response = requests.request(
+                method,
+                f"{self.LNBITS_URL}{path}",
+                headers=headers,
+                json=payload,
+                timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+                verify=False,
+            )
         try:
             body = response.json()
         except Exception:
