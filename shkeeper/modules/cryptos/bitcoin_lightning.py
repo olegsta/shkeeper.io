@@ -2,7 +2,7 @@ from collections import namedtuple
 import datetime
 from functools import cached_property
 from os import environ, path, unlink
-import base64, codecs, json, requests, secrets
+import base64, codecs, json, requests
 import threading
 from time import sleep, time
 from decimal import Decimal
@@ -225,15 +225,62 @@ class BitcoinLightning(Crypto):
     def _store_username(self, store_id: int) -> str:
         return f"shkeeper-store-{store_id}"
 
-    def _lnbits_api(self, method: str, path: str, api_key: str, payload=None):
+    def _lnbits_admin_token(self, force: bool = False) -> str:
+        now = time()
+        token = getattr(self, "_admin_token", None)
+        if token and not force and now < getattr(self, "_admin_token_exp", 0):
+            return token
+        username = environ.get("LNBITS_ADMIN_USER")
+        password = environ.get("LNBITS_ADMIN_PASSWORD")
+        if not username or not password:
+            raise RuntimeError(
+                "LNBITS_ADMIN_USER or LNBITS_ADMIN_PASSWORD is not set"
+            )
+        response = requests.post(
+            f"{self.LNBITS_URL}/api/v1/auth",
+            json={"username": username, "password": password},
+            timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+            verify=False,
+        )
+        try:
+            body = response.json()
+        except Exception:
+            body = {"detail": response.text}
+        access_token = body.get("access_token") if isinstance(body, dict) else None
+        if response.status_code not in (200, 201) or not access_token:
+            raise RuntimeError(
+                f"LNbits login failed: {self._lnbits_error(body)}"
+            )
+        self._admin_token = access_token
+        self._admin_token_exp = now + 20 * 60
+        return access_token
+
+    def _lnbits_api(
+        self, method: str, path: str, api_key: str, payload=None, account: bool = False
+    ):
+        headers = {"Content-Type": "application/json"}
+        if account:
+            headers["Authorization"] = f"Bearer {self._lnbits_admin_token()}"
+        elif api_key:
+            headers["X-API-KEY"] = api_key.strip()
         response = requests.request(
             method,
             f"{self.LNBITS_URL}{path}",
-            headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+            headers=headers,
             json=payload,
             timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
             verify=False,
         )
+        if account and response.status_code == 401:
+            headers["Authorization"] = f"Bearer {self._lnbits_admin_token(force=True)}"
+            response = requests.request(
+                method,
+                f"{self.LNBITS_URL}{path}",
+                headers=headers,
+                json=payload,
+                timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+                verify=False,
+            )
         try:
             body = response.json()
         except Exception:
@@ -264,78 +311,42 @@ class BitcoinLightning(Crypto):
 
         return BitcoinLightningStoreWallet.query.get(store_id)
 
-    def _find_lnbits_user_id(self, username: str):
+    def _account_wallets(self, name: str):
         status, body = self._lnbits_api(
             "GET",
-            "/users/api/v1/user?limit=200",
-            self.lnbits_admin_apikey,
+            f"/api/v1/wallet/paginated?search={name}&limit=50",
+            "",
+            account=True,
         )
         if status >= 300:
             raise RuntimeError(
-                f"LNbits user list failed: {self._lnbits_error(body)}"
+                f"LNbits wallet list failed: {self._lnbits_error(body)}"
             )
         rows = body.get("data") if isinstance(body, dict) else body
-        for row in rows or []:
-            if row.get("username") == username or row.get("external_id") == username:
-                return row.get("id")
-        return None
+        return [
+            row
+            for row in rows or []
+            if row.get("name") == name and self._wallet_keys(row) and row.get("user")
+        ]
 
     def _create_lnbits_wallet(self, store_id: int) -> dict:
-        """Create a dedicated LNbits user and wallet. Returns keys, no DB write."""
-        username = self._store_username(store_id)
-        password = secrets.token_urlsafe(24)
-        status, created = self._lnbits_api(
-            "POST",
-            "/users/api/v1/user",
-            self.lnbits_admin_apikey,
-            {
-                "username": username,
-                "password": password,
-                "password_repeat": password,
-                "external_id": username,
-                "extensions": ["lnurlp"],
-            },
-        )
-        if status in (200, 201) and created.get("id"):
-            user_id = created["id"]
-        else:
-            user_id = self._find_lnbits_user_id(username)
-            if not user_id:
-                raise RuntimeError(
-                    f"LNbits user create failed for store {store_id}: "
-                    f"{self._lnbits_error(created)}"
-                )
-
-        status, wallets = self._lnbits_api(
-            "GET",
-            f"/users/api/v1/user/{user_id}/wallet",
-            self.lnbits_admin_apikey,
-        )
-        if status >= 300:
-            raise RuntimeError(
-                f"LNbits wallet list failed for store {store_id}: "
-                f"{self._lnbits_error(wallets)}"
-            )
-        if isinstance(wallets, dict):
-            wallets = wallets.get("data") or wallets.get("wallets") or []
-        wallet = None
-        for candidate in wallets or []:
-            if candidate.get("name") == username and self._wallet_keys(candidate):
-                wallet = candidate
-                break
-        if wallet is None:
-            for candidate in wallets or []:
-                if self._wallet_keys(candidate):
-                    wallet = candidate
-                    break
+        """Create a wallet on the logged-in LNbits account. Returns keys, no DB write."""
+        name = self._store_username(store_id)
+        existing = self._account_wallets(name)
+        wallet = existing[0] if existing else None
         if wallet is None:
             status, wallet = self._lnbits_api(
                 "POST",
-                f"/users/api/v1/user/{user_id}/wallet",
-                self.lnbits_admin_apikey,
-                {"name": username},
+                "/api/v1/wallet",
+                "",
+                {"name": name},
+                account=True,
             )
-            if status not in (200, 201) or not self._wallet_keys(wallet or {}):
+            if (
+                status not in (200, 201)
+                or not self._wallet_keys(wallet or {})
+                or not (wallet or {}).get("user")
+            ):
                 raise RuntimeError(
                     f"LNbits wallet create failed for store {store_id}: "
                     f"{self._lnbits_error(wallet)}"
@@ -343,7 +354,7 @@ class BitcoinLightning(Crypto):
 
         wallet_id, admin_key, invoice_key = self._wallet_keys(wallet)
         return {
-            "user_id": user_id,
+            "user_id": wallet["user"],
             "wallet_id": wallet_id,
             "admin_key": admin_key,
             "invoice_key": invoice_key,
