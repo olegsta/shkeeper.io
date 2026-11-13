@@ -2,7 +2,7 @@ from collections import namedtuple
 import datetime
 from functools import cached_property
 from os import environ, path, unlink
-import base64, codecs, json, requests
+import base64, codecs, json, requests, secrets
 import threading
 from time import sleep, time
 from decimal import Decimal
@@ -20,6 +20,8 @@ from shkeeper.wallet_encryption import wallet_encryption
 
 class BitcoinLightning(Crypto):
     _display_name = "BTC Lightning"
+    # Own network so store provisioning does not share an FDA group with on-chain BTC.
+    network_currency = "BTC-LIGHTNING"
 
     def __init__(self) -> None:
         self.crypto = "BTC-LIGHTNING"
@@ -85,6 +87,7 @@ class BitcoinLightning(Crypto):
         )
 
         self._lnurl = None
+        self._store_lnurls = {}
         self._threads_started = False
 
     def start_threads(self, flask_app):
@@ -210,20 +213,179 @@ class BitcoinLightning(Crypto):
     def btc_to_msat(btc: Decimal):
         return btc * 100_000_000_000
 
-    def balance(self) -> Decimal:
+    @staticmethod
+    def _normalize_store_id(store_id) -> int:
+        if store_id is None or store_id == "":
+            return 1
+        store_id = int(store_id)
+        if store_id <= 0:
+            raise ValueError(f"Invalid store_id {store_id}")
+        return store_id
+
+    def _store_username(self, store_id: int) -> str:
+        return f"shkeeper-store-{store_id}"
+
+    def _lnbits_api(self, method: str, path: str, api_key: str, payload=None):
+        response = requests.request(
+            method,
+            f"{self.LNBITS_URL}{path}",
+            headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+            json=payload,
+            timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+            verify=False,
+        )
         try:
-            balance_response = self.session.get(
-                f"{self.LND_REST_URL}/v1/balance/channels",
-                timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+            body = response.json()
+        except Exception:
+            body = {"detail": response.text}
+        return response.status_code, body
+
+    @staticmethod
+    def _lnbits_error(body) -> str:
+        if isinstance(body, dict):
+            detail = body.get("detail") or body.get("message") or body.get("error")
+            if isinstance(detail, list):
+                return "; ".join(str(item) for item in detail)
+            if detail:
+                return str(detail)
+        return str(body)
+
+    @staticmethod
+    def _wallet_keys(wallet: dict):
+        admin_key = wallet.get("adminkey") or wallet.get("admin_key")
+        invoice_key = wallet.get("inkey") or wallet.get("invoice_key")
+        wallet_id = wallet.get("id") or wallet.get("wallet_id")
+        if not admin_key or not invoice_key or not wallet_id:
+            return None
+        return wallet_id, admin_key, invoice_key
+
+    def _load_store_wallet(self, store_id: int):
+        from shkeeper.models import BitcoinLightningStoreWallet
+
+        return BitcoinLightningStoreWallet.query.get(store_id)
+
+    def _find_lnbits_user_id(self, username: str):
+        status, body = self._lnbits_api(
+            "GET",
+            "/users/api/v1/user?limit=200",
+            self.lnbits_admin_apikey,
+        )
+        if status >= 300:
+            raise RuntimeError(
+                f"LNbits user list failed: {self._lnbits_error(body)}"
             )
-            r = balance_response.json()
-            if balance_response.status_code > 200:
-                app.logger.warning(f"Can't get balance: {r['message']}")
+        rows = body.get("data") if isinstance(body, dict) else body
+        for row in rows or []:
+            if row.get("username") == username or row.get("external_id") == username:
+                return row.get("id")
+        return None
+
+    def _create_lnbits_wallet(self, store_id: int) -> dict:
+        """Create a dedicated LNbits user and wallet. Returns keys, no DB write."""
+        username = self._store_username(store_id)
+        password = secrets.token_urlsafe(24)
+        status, created = self._lnbits_api(
+            "POST",
+            "/users/api/v1/user",
+            self.lnbits_admin_apikey,
+            {
+                "username": username,
+                "password": password,
+                "password_repeat": password,
+                "external_id": username,
+                "extensions": ["lnurlp"],
+            },
+        )
+        if status in (200, 201) and created.get("id"):
+            user_id = created["id"]
+        else:
+            user_id = self._find_lnbits_user_id(username)
+            if not user_id:
+                raise RuntimeError(
+                    f"LNbits user create failed for store {store_id}: "
+                    f"{self._lnbits_error(created)}"
+                )
+
+        status, wallets = self._lnbits_api(
+            "GET",
+            f"/users/api/v1/user/{user_id}/wallet",
+            self.lnbits_admin_apikey,
+        )
+        if status >= 300:
+            raise RuntimeError(
+                f"LNbits wallet list failed for store {store_id}: "
+                f"{self._lnbits_error(wallets)}"
+            )
+        if isinstance(wallets, dict):
+            wallets = wallets.get("data") or wallets.get("wallets") or []
+        wallet = None
+        for candidate in wallets or []:
+            if candidate.get("name") == username and self._wallet_keys(candidate):
+                wallet = candidate
+                break
+        if wallet is None:
+            for candidate in wallets or []:
+                if self._wallet_keys(candidate):
+                    wallet = candidate
+                    break
+        if wallet is None:
+            status, wallet = self._lnbits_api(
+                "POST",
+                f"/users/api/v1/user/{user_id}/wallet",
+                self.lnbits_admin_apikey,
+                {"name": username},
+            )
+            if status not in (200, 201) or not self._wallet_keys(wallet or {}):
+                raise RuntimeError(
+                    f"LNbits wallet create failed for store {store_id}: "
+                    f"{self._lnbits_error(wallet)}"
+                )
+
+        wallet_id, admin_key, invoice_key = self._wallet_keys(wallet)
+        return {
+            "user_id": user_id,
+            "wallet_id": wallet_id,
+            "admin_key": admin_key,
+            "invoice_key": invoice_key,
+        }
+
+    def prepare_store(self, store_id=None):
+        """Return the LNbits wallet row for this store, creating it if needed."""
+        from shkeeper.models import BitcoinLightningStoreWallet
+
+        store_id = self._normalize_store_id(store_id)
+        existing = self._load_store_wallet(store_id)
+        if existing and existing.admin_key and existing.invoice_key:
+            return existing
+        created = self._create_lnbits_wallet(store_id)
+        row = existing or BitcoinLightningStoreWallet(store_id=store_id)
+        row.user_id = created["user_id"]
+        row.wallet_id = created["wallet_id"]
+        row.admin_key = created["admin_key"]
+        row.invoice_key = created["invoice_key"]
+        db.session.add(row)
+        db.session.commit()
+        return row
+
+    def balance(self, store_id=None) -> Decimal:
+        return self.balance_for_account(store_id=store_id)
+
+    def balance_for_account(self, store_id=None) -> Decimal:
+        try:
+            wallet = self.prepare_store(store_id)
+            status, body = self._lnbits_api(
+                "GET", "/api/v1/wallet", wallet.invoice_key
+            )
+            if status >= 300:
+                app.logger.warning(
+                    "LNbits balance failed store_id=%s: %s",
+                    store_id,
+                    self._lnbits_error(body),
+                )
                 return Decimal(0)
-            else:
-                return self.sat_to_btc(Decimal(r["balance"]))
-        except Exception as e:
-            app.logger.exception(f"Can't get balance: {e}")
+            return self.msat_to_btc(Decimal(body.get("balance") or 0))
+        except Exception as exc:
+            app.logger.exception("LNbits balance failed: %s", exc)
             return Decimal(0)
 
     def query_routes(self, pub_key: str, amt_sat: int) -> bool:
@@ -384,24 +546,48 @@ class BitcoinLightning(Crypto):
     def to_base64_string(hex_string):
         return base64.b64encode(codecs.decode(hex_string, "hex")).decode()
 
+    def _upsert_invoice(self, payload, store_id):
+        store_id = self._normalize_store_id(store_id)
+        existing = BLI.query.filter_by(r_hash=payload["r_hash"]).first()
+        if existing:
+            if existing.store_id is None:
+                existing.store_id = store_id
+            existing.update(**payload)
+            return existing
+        bli = BLI()
+        bli.store_id = store_id
+        bli.update(**payload)
+        return bli
+
     def mkaddr(self, **kwargs) -> str:
-        data = {
-            "value": 0,
+        store_id = self._normalize_store_id(kwargs.get("store_id"))
+        wallet = self.prepare_store(store_id)
+        details = dict(kwargs.get("details") or {})
+        amount_btc = Decimal(str(details.get("value") or 0))
+        amount_sat = int(self.btc_to_sat(amount_btc))
+        payload = {
+            "out": False,
+            "amount": amount_sat,
             "expiry": self.LIGHTNING_INVOICE_TTL,
         }
-        data.update(kwargs.get("details", {}))
-        data.update({"value": int(self.btc_to_sat(data["value"]))})
-
-        invoices_response = self.session.post(
-            f"{self.LND_REST_URL}/v1/invoices",
-            data=json.dumps(data),
-            timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+        if details.get("memo"):
+            payload["memo"] = details["memo"]
+        status, body = self._lnbits_api(
+            "POST", "/api/v1/payments", wallet.invoice_key, payload
         )
-        r = invoices_response.json()
-        r["r_hash"] = self.to_hex_string(r["r_hash"])
-        bli = BLI()
-        bli.update(**r)
-        return r["payment_request"]
+        if status not in (200, 201) or not body.get("payment_request"):
+            raise RuntimeError(
+                f"Failed to generate address: {self._lnbits_error(body)}"
+            )
+        self._upsert_invoice(
+            {
+                "r_hash": body.get("payment_hash"),
+                "payment_request": body["payment_request"],
+                "value": amount_sat,
+            },
+            store_id,
+        )
+        return body["payment_request"]
 
     def invoice_listener(self, app):
         app.logger.debug("Thread started.")
@@ -566,55 +752,13 @@ class BitcoinLightning(Crypto):
         with app.app_context():
             while True:
                 try:
-                    app.logger.debug("Fetching existing LNURL-pay links from LNbits...")
-
-                    # Fetch existing LNURL-pay links
-                    response = self.lnbits_session.get(
-                        f"{self.LNBITS_URL}/lnurlp/api/v1/links",
-                    )
-
-                    if response.status_code == 200:
-                        links = response.json()
-                        app.logger.debug(f"Found {len(links)} existing LNURL links")
-
-                        # Look for ShKeeper wallet LNURL
-                        for link in links:
-                            app.logger.debug(f"Examining LNURL: {link}")
-                            if (
-                                link.get("description")
-                                == "ShKeeper BTC Lightning Wallet"
-                            ):
-                                self._lnurl = link["lnurl"]
-                                app.logger.debug(f"Using existing LNURL: {self._lnurl}")
-                                break
-
-                    # Create new LNURL if not found
-                    if not self._lnurl:
-                        app.logger.debug("Creating new LNURL-pay link via LNbits...")
-
-                        lnurl_data = {
-                            "description": "ShKeeper BTC Lightning Wallet",
-                            "min": 1,  # 1 satoshi
-                            "max": 100_000_000,  # 1 BTC in satoshis
-                            "comment_chars": 255,
-                        }
-
-                        response = self.lnbits_session.post(
-                            f"{self.LNBITS_URL}/lnurlp/api/v1/links",
-                            json=lnurl_data,
-                        )
-
-                        if response.status_code != 201:
-                            app.logger.error(f"Failed to create LNURL: {response.text}")
-                            sleep(30)
-                            continue
-
-                        result = response.json()
-                        self._lnurl = result["lnurl"]
-                        app.logger.debug(f"LNURL created: {self._lnurl}")
-
+                    lnurl = self.get_lnurl(store_id=1)
+                    if not lnurl:
+                        sleep(30)
+                        continue
+                    self._lnurl = lnurl
+                    app.logger.debug(f"LNURL ready: {self._lnurl}")
                     break
-
                 except Exception as e:
                     app.logger.exception(f"error: {e}")
                     sleep(30)
@@ -632,7 +776,7 @@ class BitcoinLightning(Crypto):
         info = (address, amount, confirmations, operation)
         return [info]
 
-    def get_confirmations_by_txid(self, txid) -> int:
+    def get_confirmations_by_txid(self, txid, store_id=None) -> int:
         return 999
 
     def estimate_tx_fee(self, amount, **kwargs):
@@ -679,7 +823,16 @@ class BitcoinLightning(Crypto):
         amount: Decimal,
         fee: int,
         subtract_fee_from_amount: bool = False,
+        store_id=None,
     ):
+        amount = Decimal(amount)
+        try:
+            wallet = self.prepare_store(store_id)
+        except Exception as exc:
+            return {"result": None, "error": {"message": str(exc)}}
+        return self._send_payment(destination, amount, wallet)
+
+    def _send_payment(self, destination: str, amount: Decimal, wallet):
         try:
             destination, lnurl_info = self.lnurl_to_pr(
                 destination, remove_exponent(self.btc_to_msat(amount))
@@ -690,50 +843,107 @@ class BitcoinLightning(Crypto):
                 timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
             ).json()
             app.logger.debug(f"Decoded payment request: {decoded_pay_req!r}")
+            if "destination" not in decoded_pay_req:
+                message = decoded_pay_req.get("message") or str(decoded_pay_req)
+                return {"result": None, "error": {"message": message}}
 
-            body = {
-                "payment_request": destination,
+            pay_body = {"out": True, "bolt11": destination}
+            if int(decoded_pay_req.get("num_satoshis") or 0) == 0:
+                pay_body["amount"] = int(self.btc_to_sat(amount))
+
+            status, result = self._lnbits_api(
+                "POST", "/api/v1/payments", wallet.admin_key, pay_body
+            )
+            app.logger.info(f"Payout result: {status} {result!r}")
+
+            if status not in (200, 201):
+                return {
+                    "result": None,
+                    "error": {"message": self._lnbits_error(result)},
+                }
+
+            payment_hash = result.get("payment_hash") or result.get("checking_id")
+            if payment_hash:
+                return {"result": payment_hash, "error": None}
+            return {
+                "result": None,
+                "error": {"message": f"Unknown result: {result!r}"},
             }
-            if int(decoded_pay_req["num_satoshis"]) == 0:
-                # add user provided amount to zero amount payment request
-                body["amt"] = remove_exponent(self.btc_to_sat(amount))
-
-            result = self.session.post(
-                f"{self.LND_REST_URL}/v1/channels/transactions",
-                data=json.dumps(body),
-                timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
-            ).json()
-
-            app.logger.info(f"Payout result: {result!r}")
-
-            if result.get("payment_error"):
-                return {
-                    "result": None,
-                    "error": {
-                        "message": "Payment error: " + repr(result["payment_error"])
-                    },
-                }
-
-            if result.get("payment_hash"):
-                return {
-                    "result": self.to_hex_string(result["payment_hash"]),
-                    "error": None,
-                }
-            else:
-                return {
-                    "result": None,
-                    "error": {"message": f"Unknown result: {result!r}"},
-                }
 
         except Exception as e:
             app.logger.exception("")
             return {"result": None, "error": {"message": str(e)}}
 
+    def multipayout(self, payout_list, store_id=None):
+        """Pay each destination in order. Lightning has no single multi-output tx."""
+        if not payout_list:
+            return {
+                "result": None,
+                "error": {"message": "Expected an array of payouts"},
+                "results": [],
+            }
+        normalized = []
+        total = Decimal(0)
+        for item in payout_list:
+            dest = item.get("dest") or item.get("destination")
+            amount = Decimal(str(item["amount"]))
+            total += amount
+            normalized.append((dest, amount))
+        available = self.balance_for_account(store_id=store_id)
+        if total > available:
+            return {
+                "result": None,
+                "error": {
+                    "message": (
+                        f"Not enough {self.crypto} for this payout. "
+                        f"Need {total}, balance {available}"
+                    )
+                },
+                "results": [],
+            }
+
+        results = []
+        hashes = []
+        for dest, amount in normalized:
+            res = self.mkpayout(dest, amount, 0, store_id=store_id)
+            entry = {
+                "dest": dest,
+                "amount": str(amount),
+                "result": res.get("result") if isinstance(res, dict) else None,
+                "error": None if isinstance(res, dict) else {"message": str(res)},
+            }
+            if isinstance(res, dict):
+                entry["error"] = res.get("error")
+            results.append(entry)
+            if entry["error"]:
+                return {
+                    "result": hashes or None,
+                    "error": entry["error"],
+                    "results": results,
+                }
+            if entry["result"]:
+                hashes.append(entry["result"])
+        if len(results) == 1:
+            return {"result": results[0]["result"], "error": None, "results": results}
+        return {"result": hashes, "error": None, "results": results}
+
     def create_wallet(self):
         # moved to lndinit
         return {"error": None}
 
-    def dump_wallet(self) -> Tuple[str, str]:
+    def dump_wallet(self, store_id=None) -> Tuple[str, str]:
+        # The node seed spends every store. Only the default store backup includes it.
+        if store_id is not None and self._normalize_store_id(store_id) != 1:
+            sid = self._normalize_store_id(store_id)
+            payload = {
+                "store_id": sid,
+                "crypto": self.crypto,
+                "invoices": self.get_all_addresses(store_id=sid),
+            }
+            return (
+                f"shkeeper-btc-lightning-store-{sid}.json",
+                json.dumps(payload, indent=2),
+            )
         setting_name = "btc_lightning_wallet_seed"
         setting = Setting.query.get(setting_name)
         content = wallet_encryption.decrypt_text(setting.value)
@@ -744,8 +954,18 @@ class BitcoinLightning(Crypto):
     def wallet(self):
         return self._wallet.query.filter_by(crypto=self.crypto).first()
 
-    def get_all_addresses(self) -> List[str]:
-        return [invoice.payment_request for invoice in BLI.query.all()]
+    def get_all_addresses(self, store_id=None) -> List[str]:
+        store_id = self._normalize_store_id(store_id)
+        query = BLI.query
+        if store_id == 1:
+            query = query.filter((BLI.store_id == 1) | BLI.store_id.is_(None))
+        else:
+            query = query.filter(BLI.store_id == store_id)
+        return [
+            invoice.payment_request
+            for invoice in query.all()
+            if invoice.payment_request
+        ]
 
     #
     # LNURL
@@ -804,10 +1024,86 @@ class BitcoinLightning(Crypto):
             )
             return destination, None
 
-    def get_lnurl(self):
-        return self._lnurl
+    def _request_store_id(self) -> int:
+        try:
+            from flask import g, has_request_context
+
+            if has_request_context():
+                store = getattr(g, "current_store", None)
+                if store is not None and getattr(store, "id", None):
+                    return int(store.id)
+        except Exception:
+            pass
+        return 1
+
+    def _ensure_store_lnurl(self, store_id: int):
+        wallet = self.prepare_store(store_id)
+        if wallet.lnurl:
+            self._store_lnurls[store_id] = wallet.lnurl
+            return wallet.lnurl
+        cached = self._store_lnurls.get(store_id)
+        if cached:
+            return cached
+        description = "ShKeeper BTC Lightning Wallet"
+        try:
+            status, links = self._lnbits_api(
+                "GET", "/lnurlp/api/v1/links", wallet.admin_key
+            )
+            if status == 200:
+                for link in links or []:
+                    if link.get("description") == description and link.get("lnurl"):
+                        wallet.lnurl = link["lnurl"]
+                        db.session.add(wallet)
+                        db.session.commit()
+                        self._store_lnurls[store_id] = wallet.lnurl
+                        return wallet.lnurl
+            status, created = self._lnbits_api(
+                "POST",
+                "/lnurlp/api/v1/links",
+                wallet.admin_key,
+                {
+                    "description": description,
+                    "min": 1,
+                    "max": 100_000_000,
+                    "comment_chars": 255,
+                },
+            )
+            if status != 201:
+                app.logger.error(
+                    "Failed to create store LNURL store_id=%s: %s",
+                    store_id,
+                    self._lnbits_error(created),
+                )
+                return None
+            lnurl = created.get("lnurl")
+            if lnurl:
+                wallet.lnurl = lnurl
+                db.session.add(wallet)
+                db.session.commit()
+                self._store_lnurls[store_id] = lnurl
+            return lnurl
+        except Exception as exc:
+            app.logger.exception(
+                "store LNURL setup failed store_id=%s: %s", store_id, exc
+            )
+            return None
+
+    def get_lnurl(self, store_id=None):
+        if store_id is None:
+            store_id = self._request_store_id()
+        store_id = self._normalize_store_id(store_id)
+        cached = self._store_lnurls.get(store_id)
+        if cached:
+            return cached
+        return self._ensure_store_lnurl(store_id)
 
     @property
     def fee_deposit_account(self):
+        return self.fee_deposit_account_for()
+
+    def fee_deposit_account_for(self, store_id=None):
         FeeDepositAccount = namedtuple("FeeDepositAccount", "addr balance")
-        return FeeDepositAccount(self.get_lnurl(), self.balance())
+        return FeeDepositAccount(
+            self.get_lnurl(store_id=store_id),
+            self.balance(store_id=store_id),
+        )

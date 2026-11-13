@@ -1110,13 +1110,26 @@ class Payout(db.Model):
 
     @classmethod
     def add_failed(
-        cls, dest, amount, crypto, error=None, callback_url=None, external_id=None
+        cls,
+        dest,
+        amount,
+        crypto,
+        error=None,
+        callback_url=None,
+        external_id=None,
+        store_id=None,
     ):
         formatted_error = cls._format_mkpayout_error(error)
         app.logger.warning(
             f"[Payout.add_failed] crypto={crypto} dest={dest} amount={amount} "
             f"external_id={external_id} error={formatted_error}"
         )
+        if store_id is None:
+            from flask import g, has_request_context
+
+            if has_request_context():
+                store = getattr(g, "current_store", None)
+                store_id = store.id if store else None
         p = cls(
             dest_addr=dest,
             amount=amount,
@@ -1126,6 +1139,7 @@ class Payout(db.Model):
             error=formatted_error,
             callback_url=callback_url,
             external_id=external_id or None,
+            store_id=store_id,
         )
         db.session.add(p)
         db.session.commit()
@@ -1295,8 +1309,21 @@ class InvoiceAddress(db.Model):
     __table_args__ = (db.UniqueConstraint("invoice_id", "crypto", "addr"),)
 
 
+class BitcoinLightningStoreWallet(db.Model):
+    """LNbits wallet that holds one store's Lightning balance."""
+
+    __tablename__ = "bitcoin_lightning_store_wallet"
+    store_id = db.Column(db.Integer, db.ForeignKey("store.id"), primary_key=True)
+    user_id = db.Column(db.String, nullable=False)
+    wallet_id = db.Column(db.String, nullable=False)
+    admin_key = db.Column(db.Text, nullable=False)
+    invoice_key = db.Column(db.Text, nullable=False)
+    lnurl = db.Column(db.Text)
+
+
 class BitcoinLightningInvoice(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    store_id = db.Column(db.Integer, db.ForeignKey("store.id"))
     r_hash = db.Column(db.String, unique=True, nullable=False)
     payment_request = db.Column(db.String(512))
     value = db.Column(db.Numeric)

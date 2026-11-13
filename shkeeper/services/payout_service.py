@@ -334,13 +334,43 @@ class PayoutService:
         res = cls._multipayout_via_crypto(
             crypto, crypto_name, payout_list, store, source, store_id
         )
+        if not isinstance(res, dict):
+            raise ValueError(f"Unexpected multipayout response: {res!r}")
         task_id = res.get("task_id")
+        per_item = res.get("results")
+        # Sidecars return {task_id} and finish later. Lightning returns per-payment
+        # results immediately; a top-level error with no results means nothing was sent.
+        if res.get("error") and not per_item:
+            raise ValueError(
+                Payout._format_mkpayout_error(res.get("error")) or "Payout failed"
+            )
 
         created_ids = []
-        for req in payout_list:
-            payout = cls.create_payout_record(
-                req, crypto_name, task_id=task_id, store_id=store_id
+        for index, req in enumerate(payout_list):
+            item = (
+                per_item[index]
+                if isinstance(per_item, list) and index < len(per_item)
+                else None
             )
+            destination = req.get("destination") or req.get("dest")
+            if item and item.get("error"):
+                payout = Payout.add_failed(
+                    destination,
+                    Decimal(req["amount"]),
+                    crypto_name,
+                    error=item.get("error"),
+                    callback_url=req.get("callback_url"),
+                    external_id=req.get("external_id"),
+                    store_id=store_id,
+                )
+            else:
+                txids = []
+                if item and item.get("result"):
+                    result = item["result"]
+                    txids = result if isinstance(result, list) else [result]
+                payout = cls.create_payout_record(
+                    req, crypto_name, task_id=task_id, txids=txids, store_id=store_id
+                )
             created_ids.append(payout.id)
         res["external_ids"] = [
             req.get("external_id") for req in payout_list if req.get("external_id")
