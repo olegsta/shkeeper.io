@@ -604,10 +604,15 @@ class Invoice(db.Model):
                 if btc_address:
                     app.logger.debug("Using already existing on-chain BTC address")
                 else:
-                    app.logger.debug("Generating a new on-chain BTC address")
+                    app.logger.debug(
+                        "Generating a new on-chain BTC address for store_id=%s",
+                        store.id if store else None,
+                    )
                     btc_address = InvoiceAddress()
                     btc_address.crypto = "BTC"
-                    btc_address.addr = btc.mkaddr()
+                    btc_address.addr = cls._mkaddr_for_store(
+                        btc, store, invoice.amount_crypto
+                    )
                     btc_address.invoice_id = invoice.id
                     db.session.add(btc_address)
             else:
