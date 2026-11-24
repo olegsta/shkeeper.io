@@ -36,8 +36,15 @@
           </p>
         </div>
         <div><p>Payment request or LNURL:</p></div>
-        <div class="d-flex align-items-center">
-            <textarea id="paddress" class="form-control common-text"  style="width: 100%;" rows="7" placeholder="lnbc... / lntb... / lnbs... / lnbcrt..."></textarea>
+        <div>
+            <textarea id="paddress" class="form-control common-text" style="width: 100%;" rows="7" {% if is_store_owner %}readonly{% endif %} {% if is_store_owner and not payout_locked_destination %}placeholder="Merchant wallet is not configured"{% else %}placeholder="lnbc... / lntb... / lnbs... / lnbcrt..."{% endif %}>{% if payout_locked_destination %}{{ payout_locked_destination }}{% endif %}</textarea>
+            {% if is_store_owner %}
+              {% if payout_locked_destination %}
+              <p class="common-text warning-text mt-2 mb-0">Payouts are locked to your merchant wallet.</p>
+              {% else %}
+              <p class="common-text danger-text mt-2 mb-0">Merchant wallet is not configured. Ask the admin to set it before payout.</p>
+              {% endif %}
+            {% endif %}
         </div>
 
         <div><p>Amount:</p></div>
@@ -74,7 +81,7 @@
   </div>
   <div class="row">
     <div class="col d-flex justify-content-end mt-5">
-      <button type="submit" class="btn btn-outline-primary btn-outline-primary__customization btn-fixed-w me-3 send-payment" data-progress="off">
+      <button type="submit" class="btn btn-outline-primary btn-outline-primary__customization btn-fixed-w me-3 send-payment" data-progress="off"{% if is_store_owner and not payout_locked_destination %} disabled{% endif %}>
         <span class="tx_standby">Send</span>
         <span class="tx_in_progress" style="display: none;">
           <span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>
@@ -188,12 +195,15 @@ function decode_pay_req() {
     })
 }
 document.querySelector("#paddress").addEventListener("input", delay((e) => decode_pay_req(), 200));
+if (paddress.value.trim()) {
+  decode_pay_req();
+}
 
 document.querySelector(".send-payment").addEventListener("click", e => {
   if (document.querySelector(".send-payment").dataset.progress == 'on') return;
 
   if (!paddress.value.trim())  {
-    alert("Please fill in payment request first.");
+    alert({% if is_store_owner %}"Merchant wallet is not configured. Ask the admin to set it before payout."{% else %}"Please fill in payment request first."{% endif %});
     paddress.focus();
     return;
   }
