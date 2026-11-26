@@ -29,15 +29,22 @@
             </button>
         </div>
 
-        <div><p>Balance over all channels:</p></div>
+        <div><p>Balance:</p></div>
         <div>
           <p>
             <strong>{{crypto.balance()|format_decimal(6)}}</strong> {{crypto.display_name}}
           </p>
         </div>
         <div><p>Payment request or LNURL:</p></div>
-        <div class="d-flex align-items-center">
-            <textarea id="paddress" class="form-control common-text"  style="width: 100%;" rows="7" placeholder="lnbc... / lntb... / lnbs... / lnbcrt..."></textarea>
+        <div>
+            <textarea id="paddress" class="form-control common-text" style="width: 100%;" rows="7" {% if is_store_owner %}readonly{% endif %} {% if is_store_owner and not payout_locked_destination %}placeholder="Merchant wallet is not configured"{% else %}placeholder="lnbc... / lntb... / lnbs... / lnbcrt..."{% endif %}>{% if payout_locked_destination %}{{ payout_locked_destination }}{% endif %}</textarea>
+            {% if is_store_owner %}
+              {% if payout_locked_destination %}
+              <p class="common-text warning-text mt-2 mb-0">Payouts are locked to your merchant wallet.</p>
+              {% else %}
+              <p class="common-text danger-text mt-2 mb-0">Merchant wallet is not configured. Ask the admin to set it before payout.</p>
+              {% endif %}
+            {% endif %}
         </div>
 
         <div><p>Amount:</p></div>
@@ -74,7 +81,7 @@
   </div>
   <div class="row">
     <div class="col d-flex justify-content-end mt-5">
-      <button type="submit" class="btn btn-outline-primary btn-outline-primary__customization btn-fixed-w me-3 send-payment" data-progress="off">
+      <button type="submit" class="btn btn-outline-primary btn-outline-primary__customization btn-fixed-w me-3 send-payment" data-progress="off"{% if is_store_owner and not payout_locked_destination %} disabled{% endif %}>
         <span class="tx_standby">Send</span>
         <span class="tx_in_progress" style="display: none;">
           <span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>
@@ -161,14 +168,22 @@ function decode_pay_req() {
       console.log(data);
 
       if (data.lnurl_info) {
-          minSendable = (data.lnurl_info.minSendable / 100_000_000_000).toFixed(8);
-          maxSendable = (data.lnurl_info.maxSendable / 100_000_000_000).toFixed(8);
-          amount_btc.min = minSendable;
-          amount_btc.max = maxSendable;
-          amount_btc.value = minSendable;
+          if (data.payout_min && data.payout_max) {
+            amount_btc.min = Number(data.payout_min).toFixed(8);
+            amount_btc.max = Number(data.payout_max).toFixed(8);
+            amount_btc.value = Number(data.payout_amount || data.payout_min).toFixed(8);
+          } else {
+            minSendable = (data.lnurl_info.minSendable / 100_000_000_000).toFixed(8);
+            maxSendable = (data.lnurl_info.maxSendable / 100_000_000_000).toFixed(8);
+            amount_btc.min = minSendable;
+            amount_btc.max = maxSendable;
+            amount_btc.value = minSendable;
+          }
       } else {
         if (data.payment_request_details) {
-          let amount = (data.payment_request_details.num_satoshis / 100_000_000).toFixed(8);
+          let amount = data.payout_amount
+            ? Number(data.payout_amount).toFixed(8)
+            : (data.payment_request_details.num_satoshis / 100_000_000).toFixed(8);
           amount_btc.value = amount;
           amount_btc.min = amount;
           amount_btc.max = amount;
@@ -188,12 +203,15 @@ function decode_pay_req() {
     })
 }
 document.querySelector("#paddress").addEventListener("input", delay((e) => decode_pay_req(), 200));
+if (paddress.value.trim()) {
+  decode_pay_req();
+}
 
 document.querySelector(".send-payment").addEventListener("click", e => {
   if (document.querySelector(".send-payment").dataset.progress == 'on') return;
 
   if (!paddress.value.trim())  {
-    alert("Please fill in payment request first.");
+    alert({% if is_store_owner %}"Merchant wallet is not configured. Ask the admin to set it before payout."{% else %}"Please fill in payment request first."{% endif %});
     paddress.focus();
     return;
   }
@@ -240,6 +258,8 @@ if (maxAmount > 0) {
       console.log(data);
       if (data.error) {
         alert(`Invoice payment failure: ${data.error.message}`);
+      } else if (data.pending) {
+        alert(`Invoice payment is pending confirmation.`);
       } else {
         alert(`Invoice payment success.`);
       }

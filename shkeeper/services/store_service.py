@@ -29,6 +29,13 @@ from shkeeper.services.multistore import (
 DEFAULT_ADMIN_STORE_ID = 1
 
 
+def _prepare_lightning_store(crypto, store_id: int):
+    from shkeeper.modules.cryptos.bitcoin_lightning import BitcoinLightning
+
+    if isinstance(crypto, BitcoinLightning):
+        crypto.prepare_store(store_id)
+
+
 def ensure_default_store():
     store = Store.query.filter_by(is_default=True).first()
     if store:
@@ -99,7 +106,8 @@ def _link_default_store_wallets(store: Store) -> bool:
             if uses_fee_deposit_account(crypto):
                 sw.fda_address = crypto.fee_deposit_account_for(store_id=store.id).addr
             else:
-                # UTXO has no FDA; the HD wallet is created lazily on first mkaddr.
+                # UTXO has no FDA. Lightning opens an LNbits wallet instead.
+                _prepare_lightning_store(crypto, store.id)
                 sw.fda_address = None
             sw.status = StoreWalletStatus.READY
             sw.last_error = None
@@ -331,10 +339,15 @@ def _provision_network(store: Store, network: str, items):
     crypto = items[0][1]
 
     if not uses_fee_deposit_account(crypto):
-        for sw, _ in items:
-            sw.fda_address = None
-            sw.status = StoreWalletStatus.READY
-            sw.last_error = None
+        for sw, item_crypto in items:
+            try:
+                _prepare_lightning_store(item_crypto, store.id)
+                sw.fda_address = None
+                sw.status = StoreWalletStatus.READY
+                sw.last_error = None
+            except Exception as exc:
+                sw.status = StoreWalletStatus.FAILED
+                sw.last_error = str(exc)
         db.session.commit()
         return
 
@@ -553,6 +566,10 @@ def _is_valid_tron_address(address: str) -> bool:
     return all(ch in _TRON_B58_ALPHABET for ch in address)
 
 
+def _is_lightning(crypto_name: str) -> bool:
+    return crypto_name == "BTC-LIGHTNING"
+
+
 def _is_utxo_like(crypto_name: str) -> bool:
     from shkeeper.modules.classes.utxo_like_wallet_crypto import UtxoLikeWalletCrypto
 
@@ -563,6 +580,8 @@ def _is_utxo_like(crypto_name: str) -> bool:
 
 
 def _is_valid_fee_collection_format(crypto_name: str, address: str) -> bool:
+    if _is_lightning(crypto_name):
+        return True
     if _is_utxo_like(crypto_name):
         return _is_valid_utxo_address(address, crypto_name)
     if _is_tron_like(crypto_name):
@@ -626,12 +645,17 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
 
     ETH/Tron: must be external or an FDA — not a generated invoice/hot address.
     BTC/LTC/DOGE: any non-empty destination is stored as-is.
+    BTC-LIGHTNING: the address entered by the admin is stored as-is.
     """
     address = (address or "").strip() or None
     if not address:
         return None
+    if _is_lightning(crypto_name):
+        return address
     if not _is_valid_fee_collection_format(crypto_name, address):
-        if _is_tron_like(crypto_name):
+        if _is_lightning(crypto_name):
+            family = "Lightning"
+        elif _is_tron_like(crypto_name):
             family = "TRON"
         elif _is_utxo_like(crypto_name):
             family = crypto_name
@@ -639,7 +663,7 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
             family = "Ethereum"
         raise ValueError(f"Invalid {family} address: {address}")
 
-    if _is_utxo_like(crypto_name):
+    if _is_utxo_like(crypto_name) or _is_lightning(crypto_name):
         return address
 
     key = _address_key(crypto_name, address)
@@ -661,6 +685,33 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
             "(FDA) address, not a generated invoice/hot address"
         )
     return address
+
+
+def validate_merchant_wallet_address(crypto_name: str, address: str | None) -> str | None:
+    """Merchant (cold) wallet. A Lightning destination is stored as entered."""
+    address = (address or "").strip() or None
+    if not address:
+        return None
+    if _is_lightning(crypto_name):
+        return address
+    if not _is_valid_fee_collection_format(crypto_name, address):
+        if _is_tron_like(crypto_name):
+            family = "TRON"
+        elif _is_utxo_like(crypto_name):
+            family = crypto_name
+        else:
+            family = "Ethereum"
+        raise ValueError(f"Invalid {family} address: {address}")
+    return address
+
+
+def update_store_wallet_destinations(sw, cold_wallet_address, fee_address):
+    """Validate and store the merchant and admin payout destinations."""
+    sw.cold_wallet_address = validate_merchant_wallet_address(
+        sw.crypto, cold_wallet_address
+    )
+    sw.fee_collection_address = validate_fee_collection_address(sw.crypto, fee_address)
+    return sw
 
 
 def get_global_fee_collection_address(crypto_name: str):

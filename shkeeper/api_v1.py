@@ -36,7 +36,7 @@ from shkeeper.services.tenancy import (
     require_default_store,
     store_owner_wallet,
 )
-from shkeeper.services.store_service import get_store_wallet
+from shkeeper.services.store_service import effective_fee_percent, get_store_wallet
 from shkeeper.services.multistore import is_multistore_backend, store_wallet_is_ready
 from shkeeper.callback import send_notification, send_unconfirmed_notification
 from shkeeper.utils import format_decimal
@@ -757,7 +757,49 @@ def estimate_tx_fee(crypto_name, amount):
                 "message": f"Store wallet is not provisioned for {crypto_name}",
             }, 400
         kwargs["store_id"] = store.id
-    return crypto.estimate_tx_fee(amount, **kwargs)
+    result = crypto.estimate_tx_fee(amount, **kwargs)
+    if (
+        crypto_name == "BTC-LIGHTNING"
+        and isinstance(result, dict)
+        and result.get("status") == "success"
+    ):
+        store = getattr(g, "current_store", None)
+        details = result.get("payment_request_details") or {}
+        try:
+            sats = int(details.get("num_satoshis") or 0)
+        except (TypeError, ValueError):
+            sats = 0
+        if store and not store.is_default:
+            sw = get_store_wallet(store, crypto_name)
+            fee_pct = effective_fee_percent(store, sw)
+            if fee_pct > 0 and result.get("lnurl_info"):
+                info = result["lnurl_info"]
+                low, high = PayoutService.gross_bounds_for_msat(
+                    info.get("minSendable") or 0,
+                    info.get("maxSendable") or 0,
+                    fee_pct,
+                )
+                if low is None or high is None:
+                    return {
+                        "status": "error",
+                        "error": "Platform fee does not fit this Lightning address range.",
+                    }
+                result["payout_min"] = format(low.quantize(Decimal("0.00000001")), "f")
+                result["payout_max"] = format(high.quantize(Decimal("0.00000001")), "f")
+                result["payout_amount"] = result["payout_min"]
+            elif fee_pct > 0 and sats:
+                gross = PayoutService.gross_amount_for_net(
+                    Decimal(sats) / Decimal(100_000_000), fee_pct
+                )
+                if gross is None:
+                    return {
+                        "status": "error",
+                        "error": "Platform fee does not fit this invoice amount.",
+                    }
+                result["payout_amount"] = format(
+                    gross.quantize(Decimal("0.00000001")), "f"
+                )
+    return result
 
 
 @blp_v1.get("/<string:crypto_name>/task/<string:id>")
