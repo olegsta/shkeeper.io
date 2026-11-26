@@ -175,7 +175,9 @@ function decode_pay_req() {
           amount_btc.value = minSendable;
       } else {
         if (data.payment_request_details) {
-          let amount = (data.payment_request_details.num_satoshis / 100_000_000).toFixed(8);
+          let amount = data.payout_amount
+            ? Number(data.payout_amount).toFixed(8)
+            : (data.payment_request_details.num_satoshis / 100_000_000).toFixed(8);
           amount_btc.value = amount;
           amount_btc.min = amount;
           amount_btc.max = amount;
@@ -250,6 +252,8 @@ if (maxAmount > 0) {
       console.log(data);
       if (data.error) {
         alert(`Invoice payment failure: ${data.error.message}`);
+      } else if (data.pending) {
+        alert(`Invoice payment is pending confirmation.`);
       } else {
         alert(`Invoice payment success.`);
       }

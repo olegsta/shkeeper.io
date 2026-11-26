@@ -715,6 +715,15 @@ def validate_merchant_wallet_address(crypto_name: str, address: str | None) -> s
     return address
 
 
+def update_store_wallet_destinations(sw, cold_wallet_address, fee_address):
+    """Validate and store the merchant and admin payout destinations."""
+    sw.cold_wallet_address = validate_merchant_wallet_address(
+        sw.crypto, cold_wallet_address
+    )
+    sw.fee_collection_address = validate_fee_collection_address(sw.crypto, fee_address)
+    return sw
+
+
 def get_global_fee_collection_address(crypto_name: str):
     from shkeeper.models import Setting
 

@@ -1164,6 +1164,26 @@ class Payout(db.Model):
         )
 
         if isinstance(res, dict):
+            if res.get("unknown"):
+                result = res.get("result")
+                txids = result if isinstance(result, list) else ([result] if result else [])
+                app.logger.warning(
+                    f"[register_from_mkpayout] unknown outcome -> in progress {log_ctx}"
+                )
+                created = cls.add(
+                    {
+                        "dest": dest,
+                        "amount": amount,
+                        "callback_url": callback_url,
+                        "txids": txids,
+                    },
+                    crypto,
+                    external_id=external_id,
+                    store_id=store_id,
+                )
+                created.error = cls._format_mkpayout_error(res.get("error"))
+                db.session.commit()
+                return created
             if res.get("error"):
                 app.logger.warning(
                     f"[register_from_mkpayout] dict with error -> add_failed {log_ctx} error={res['error']}"
@@ -1175,6 +1195,7 @@ class Payout(db.Model):
                     error=res["error"],
                     callback_url=callback_url,
                     external_id=external_id,
+                    store_id=store_id,
                 )
             task_id = res.get("task_id")
             result = res.get("result")
@@ -1212,6 +1233,7 @@ class Payout(db.Model):
                 error=res,
                 callback_url=callback_url,
                 external_id=external_id,
+                store_id=store_id,
             )
 
         app.logger.error(
