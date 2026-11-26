@@ -1,11 +1,11 @@
 # app/services/payout_service.py
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from urllib.parse import urlparse
 
 from flask import current_app as app, g
 
 from shkeeper import db
-from shkeeper.models import Payout, UserRole
+from shkeeper.models import Payout, PayoutStatus, PayoutTx, UserRole
 from shkeeper.modules.classes.crypto import Crypto
 from shkeeper.services.multistore import crypto_supports_multistore, store_wallet_is_ready
 from shkeeper.services.store_service import (
@@ -134,6 +134,37 @@ class PayoutService:
             return transfers
         return [{"dest": destination, "amount": gross_amount}]
 
+    @staticmethod
+    def gross_amount_for_net(net_amount, fee_pct):
+        """Gross that leaves exactly net_amount after the platform fee rounding."""
+        net_amount = Decimal(net_amount)
+        fee_pct = Decimal(fee_pct or 0)
+        if fee_pct <= 0:
+            return net_amount
+        if fee_pct >= 100:
+            return None
+        net_sats = int(net_amount * Decimal(100_000_000))
+        approx = Decimal(net_sats) * Decimal(100) / (Decimal(100) - fee_pct)
+        start = int(approx.to_integral_value(rounding=ROUND_CEILING))
+        for sats in range(max(net_sats, start - 2), start + 20):
+            gross = Decimal(sats) / Decimal(100_000_000)
+            fee_amount = (gross * fee_pct / Decimal(100)).quantize(Decimal("0.00000001"))
+            net_sats_after = int((gross - fee_amount) * Decimal(100_000_000))
+            if net_sats_after == net_sats:
+                return gross
+        return None
+
+    @classmethod
+    def gross_bounds_for_msat(cls, min_msat, max_msat, fee_pct):
+        """Gross form amounts whose net stays inside an LNURL min/max range."""
+        def to_btc(msat):
+            return Decimal(int(msat)) / Decimal(100_000_000_000)
+
+        return (
+            cls.gross_amount_for_net(to_btc(min_msat), fee_pct),
+            cls.gross_amount_for_net(to_btc(max_msat), fee_pct),
+        )
+
     @classmethod
     def _expand_with_platform_fees(cls, store, crypto_name, payout_list):
         """Split each merchant payout into internal fee + externally visible net."""
@@ -179,6 +210,121 @@ class PayoutService:
         return crypto.multipayout(payout_list)
 
     @classmethod
+    def _lightning_pay_store_id(cls, crypto_name, store, source, store_id):
+        if crypto_supports_multistore(crypto_name):
+            if source:
+                return source.get("store_id", store_id)
+            if store and not store.is_default:
+                raise ValueError(f"Store wallet is not provisioned for {crypto_name}")
+        return store_id
+
+    @classmethod
+    def _apply_lightning_result(cls, payout, res):
+        # A dropped connection can happen after LNbits accepted the payment.
+        # Keep the saved hash in progress so the poller can reconcile it.
+        if isinstance(res, dict) and res.get("unknown"):
+            payout.error = Payout._format_mkpayout_error(res.get("error"))
+            db.session.commit()
+            return
+        if not isinstance(res, dict) or res.get("error"):
+            payout.status = PayoutStatus.FAIL
+            payout.success = "No"
+            payout.error = Payout._format_mkpayout_error(
+                res.get("error") if isinstance(res, dict) else res
+            )
+            db.session.commit()
+            return
+        payment_hash = res.get("result")
+        known = {tx.txid for tx in (payout.transactions or [])}
+        if payment_hash and payment_hash not in known:
+            db.session.add(PayoutTx(payout_id=payout.id, txid=payment_hash))
+        db.session.commit()
+
+    @classmethod
+    def _record_lightning_payouts(
+        cls, crypto, crypto_name, payout_list, store, source, store_id
+    ):
+        """Save each payout and its invoice hash before that payment is sent."""
+        pay_store_id = cls._lightning_pay_store_id(
+            crypto_name, store, source, store_id
+        )
+        prepared, error = crypto.prepare_payouts(payout_list, store_id=pay_store_id)
+        if error:
+            raise ValueError(
+                Payout._format_mkpayout_error(error.get("error")) or "Payout failed"
+            )
+
+        results = []
+        hashes = []
+        stopped = None
+        for index, item in enumerate(prepared):
+            req = payout_list[index]
+            txids = [item["payment_hash"]] if item.get("payment_hash") else []
+            payout = cls.create_payout_record(
+                req, crypto_name, txids=txids, store_id=store_id
+            )
+            try:
+                res = crypto.mkpayout(
+                    item["dest"],
+                    item["amount"],
+                    0,
+                    store_id=pay_store_id,
+                    bolt11=item["bolt11"],
+                    encoded_sats=item["encoded_sats"],
+                )
+            except Exception as exc:
+                res = {"result": None, "error": {"message": str(exc)}}
+            cls._apply_lightning_result(payout, res)
+            entry = {
+                "dest": item["dest"],
+                "amount": str(item["amount"]),
+                "result": res.get("result") if isinstance(res, dict) else None,
+                "error": res.get("error") if isinstance(res, dict) else {"message": str(res)},
+                "pending": bool(res.get("pending")) if isinstance(res, dict) else False,
+            }
+            results.append(entry)
+            if entry["error"]:
+                stopped = entry["error"]
+                break
+            if entry["result"]:
+                hashes.append(entry["result"])
+
+        for req in payout_list[len(results) :]:
+            destination = req.get("destination") or req.get("dest")
+            Payout.add_failed(
+                destination,
+                Decimal(req["amount"]),
+                crypto_name,
+                error={"message": "Not sent"},
+                callback_url=req.get("callback_url"),
+                external_id=req.get("external_id"),
+                store_id=store_id,
+            )
+            results.append(
+                {
+                    "dest": destination,
+                    "amount": str(req["amount"]),
+                    "result": None,
+                    "error": {"message": "Not sent"},
+                    "pending": False,
+                }
+            )
+
+        if len(hashes) == 1 and not stopped:
+            result = hashes[0]
+        else:
+            result = hashes or None
+        return {
+            "result": result,
+            "error": stopped,
+            "pending": any(item.get("pending") for item in results),
+            "results": results,
+            "external_ids": [
+                req.get("external_id") for req in payout_list if req.get("external_id")
+            ],
+        }
+
+    @classmethod
     def single_payout(cls, crypto_name, req, apply_platform_fee=False):
         app.logger.info(
             f"[single_payout] Started for crypto={crypto_name} destination={req.get('destination')} amount={req.get('amount')} external_id={req.get('external_id')}"
@@ -207,6 +353,29 @@ class PayoutService:
             crypto_name, req["destination"], store=store
         )
         amount = Decimal(req["amount"])
+
+        if crypto_name == "BTC-LIGHTNING":
+            payout_list = [
+                {
+                    "dest": destination,
+                    "destination": destination,
+                    "amount": amount,
+                    "external_id": req.get("external_id"),
+                    "callback_url": callback_url,
+                }
+            ]
+            if apply_platform_fee and store:
+                payout_list = cls._expand_with_platform_fees(
+                    store, crypto_name, payout_list
+                )
+            return cls.multiple_payout(
+                crypto_name,
+                payout_list,
+                store=store,
+                source=source,
+                enforce_destination=False,
+                apply_platform_fee=False,
+            )
 
         if apply_platform_fee and store:
             expanded = cls._expand_with_platform_fees(
@@ -264,6 +433,7 @@ class PayoutService:
                 },
                 crypto_name,
                 external_id=req.get("external_id"),
+                store_id=store_id,
             )
         except Exception as e:
             app.logger.error(f"[single_payout] Failed to create payout record: {e}")
@@ -327,6 +497,10 @@ class PayoutService:
                 seen_external_ids.add(external_id)
 
         crypto = cls.get_crypto(crypto_name)
+        if crypto_name == "BTC-LIGHTNING":
+            return cls._record_lightning_payouts(
+                crypto, crypto_name, payout_list, store, source, store_id
+            )
         res = cls._multipayout_via_crypto(
             crypto, crypto_name, payout_list, store, source, store_id
         )
@@ -343,18 +517,22 @@ class PayoutService:
 
         created_ids = []
         for index, req in enumerate(payout_list):
-            item = (
-                per_item[index]
-                if isinstance(per_item, list) and index < len(per_item)
-                else None
-            )
+            has_item = isinstance(per_item, list) and index < len(per_item)
+            item = per_item[index] if has_item else None
             destination = req.get("destination") or req.get("dest")
-            if item and item.get("error"):
+            # Lightning returns one result per attempt and then stops. Later rows
+            # were not sent. A sidecar task_id with no per-item row stays pending.
+            not_sent = isinstance(per_item, list) and not has_item and not task_id
+            if not_sent or (item and item.get("error")):
                 payout = Payout.add_failed(
                     destination,
                     Decimal(req["amount"]),
                     crypto_name,
-                    error=item.get("error"),
+                    error=(
+                        {"message": "Not sent"}
+                        if not_sent
+                        else item.get("error")
+                    ),
                     callback_url=req.get("callback_url"),
                     external_id=req.get("external_id"),
                     store_id=store_id,

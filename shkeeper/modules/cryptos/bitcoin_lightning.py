@@ -7,6 +7,8 @@ import threading
 from time import sleep, time
 from decimal import Decimal
 from typing import List, Literal, Tuple
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from sqlalchemy.exc import IntegrityError
 
 from flask import current_app as app
 
@@ -18,10 +20,19 @@ from shkeeper.utils import format_decimal, remove_exponent
 from shkeeper.wallet_encryption import wallet_encryption
 
 
+def _lnurl_callback_with_amount(callback: str, amount) -> str:
+    parts = urlsplit(callback)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    query.append(("amount", str(amount)))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
 class BitcoinLightning(Crypto):
     _display_name = "BTC Lightning"
     # Own network so store provisioning does not share an FDA group with on-chain BTC.
     network_currency = "BTC-LIGHTNING"
+    _provision_locks = {}
+    _provision_locks_guard = threading.Lock()
 
     def __init__(self) -> None:
         self.crypto = "BTC-LIGHTNING"
@@ -240,7 +251,7 @@ class BitcoinLightning(Crypto):
             f"{self.LNBITS_URL}/api/v1/auth",
             json={"username": username, "password": password},
             timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
-            verify=False,
+            verify=True,
         )
         try:
             body = response.json()
@@ -269,7 +280,7 @@ class BitcoinLightning(Crypto):
             headers=headers,
             json=payload,
             timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
-            verify=False,
+            verify=True,
         )
         if account and response.status_code == 401:
             headers["Authorization"] = f"Bearer {self._lnbits_admin_token(force=True)}"
@@ -279,7 +290,7 @@ class BitcoinLightning(Crypto):
                 headers=headers,
                 json=payload,
                 timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
-                verify=False,
+                verify=True,
             )
         try:
             body = response.json()
@@ -329,11 +340,50 @@ class BitcoinLightning(Crypto):
             if row.get("name") == name and self._wallet_keys(row) and row.get("user")
         ]
 
+    def _legacy_default_wallet(self):
+        """The LNbits wallet that held funds before per-store wallets existed.
+
+        Its admin key is the file written by setup. Adopting that wallet keeps
+        the old balance and invoices that were created against it.
+        """
+        try:
+            admin_key = self.lnbits_admin_apikey.strip()
+        except Exception:
+            return None
+        if not admin_key:
+            return None
+        status, body = self._lnbits_api("GET", "/api/v1/wallet", admin_key)
+        if status >= 300 or not isinstance(body, dict) or not body.get("id"):
+            raise RuntimeError(
+                f"LNbits legacy wallet lookup failed: {self._lnbits_error(body)}"
+            )
+        # The file key already authenticates this wallet. LNbits accepts an
+        # admin key for invoice calls, so no account login is required.
+        wallet = {
+            "id": body["id"],
+            "name": body.get("name") or "",
+            "user": body.get("user") or body["id"],
+            "adminkey": body.get("adminkey") or body.get("admin_key") or admin_key,
+            "inkey": body.get("inkey") or body.get("invoice_key") or admin_key,
+        }
+        name = str(wallet["name"])
+        if name.startswith("shkeeper-store-") and name != self._store_username(1):
+            return None
+        if not self._wallet_keys(wallet):
+            raise RuntimeError(
+                f"LNbits legacy wallet lookup failed: {self._lnbits_error(body)}"
+            )
+        return wallet
+
     def _create_lnbits_wallet(self, store_id: int) -> dict:
         """Create a wallet on the logged-in LNbits account. Returns keys, no DB write."""
         name = self._store_username(store_id)
-        existing = self._account_wallets(name)
-        wallet = existing[0] if existing else None
+        # The old install only has the admin-key file. Look that wallet up
+        # before asking for the new username and password.
+        wallet = self._legacy_default_wallet() if store_id == 1 else None
+        if wallet is None:
+            existing = self._account_wallets(name)
+            wallet = existing[0] if existing else None
         if wallet is None:
             status, wallet = self._lnbits_api(
                 "POST",
@@ -360,6 +410,14 @@ class BitcoinLightning(Crypto):
             "invoice_key": invoice_key,
         }
 
+    def _provision_lock(self, store_id: int):
+        with BitcoinLightning._provision_locks_guard:
+            lock = BitcoinLightning._provision_locks.get(store_id)
+            if lock is None:
+                lock = threading.Lock()
+                BitcoinLightning._provision_locks[store_id] = lock
+            return lock
+
     def prepare_store(self, store_id=None):
         """Return the LNbits wallet row for this store, creating it if needed."""
         from shkeeper.models import BitcoinLightningStoreWallet
@@ -368,15 +426,26 @@ class BitcoinLightning(Crypto):
         existing = self._load_store_wallet(store_id)
         if existing and existing.admin_key and existing.invoice_key:
             return existing
-        created = self._create_lnbits_wallet(store_id)
-        row = existing or BitcoinLightningStoreWallet(store_id=store_id)
-        row.user_id = created["user_id"]
-        row.wallet_id = created["wallet_id"]
-        row.admin_key = created["admin_key"]
-        row.invoice_key = created["invoice_key"]
-        db.session.add(row)
-        db.session.commit()
-        return row
+        with self._provision_lock(store_id):
+            existing = self._load_store_wallet(store_id)
+            if existing and existing.admin_key and existing.invoice_key:
+                return existing
+            created = self._create_lnbits_wallet(store_id)
+            row = existing or BitcoinLightningStoreWallet(store_id=store_id)
+            row.user_id = created["user_id"]
+            row.wallet_id = created["wallet_id"]
+            row.admin_key = created["admin_key"]
+            row.invoice_key = created["invoice_key"]
+            try:
+                db.session.add(row)
+                db.session.commit()
+            except IntegrityError:
+                db.session.rollback()
+                winner = self._load_store_wallet(store_id)
+                if winner and winner.admin_key and winner.invoice_key:
+                    return winner
+                raise
+            return row
 
     def balance(self, store_id=None) -> Decimal:
         return self.balance_for_account(store_id=store_id)
@@ -600,12 +669,55 @@ class BitcoinLightning(Crypto):
         )
         return body["payment_request"]
 
+    def _lnbits_incoming_update(self, inv):
+        """Settlement recorded by this store's LNbits wallet, including internal payments."""
+        if not getattr(inv, "r_hash", None):
+            return None
+        wallet = self._load_store_wallet(self._normalize_store_id(getattr(inv, "store_id", None)))
+        if not wallet or not wallet.invoice_key:
+            return None
+        status, body = self._lnbits_api(
+            "GET", f"/api/v1/payments/{inv.r_hash}", wallet.invoice_key
+        )
+        if status >= 300 or not isinstance(body, dict):
+            return None
+        if self._payment_state_from_body(body) != "success":
+            return None
+        details = body.get("details") if isinstance(body.get("details"), dict) else body
+        update = {"r_hash": inv.r_hash, "state": "SETTLED"}
+        if details.get("bolt11"):
+            update["payment_request"] = details["bolt11"]
+        if details.get("time"):
+            update["settle_date"] = str(details["time"])
+        return update
+
+    def _mark_lnbits_settlement(self, inv) -> bool:
+        update = self._lnbits_incoming_update(inv)
+        if not update:
+            return False
+        inv.update(**update)
+        return True
+
+    def _refresh_lnbits_settlements(self):
+        inactive_statuses = ("SETTLED", "CANCELED")
+        unpaid = BLI.query.filter(
+            (BLI.state.not_in(inactive_statuses)) | BLI.state.is_(None)
+        ).all()
+        for inv in unpaid:
+            try:
+                self._mark_lnbits_settlement(inv)
+            except Exception:
+                app.logger.exception(
+                    "LNbits settlement check failed for %s", inv.r_hash
+                )
+
     def invoice_listener(self, app):
         app.logger.debug("Thread started.")
 
         while True:
             with app.app_context():
                 try:
+                    self._refresh_lnbits_settlements()
                     r = self.session.get(
                         f"{self.LND_REST_URL}/v1/invoices/subscribe",
                         stream=True,
@@ -644,12 +756,21 @@ class BitcoinLightning(Crypto):
                             f"db has {len(unpaid_invoices)} unpaid invoces"
                         )
                     for inv in unpaid_invoices:
-                        r = self.session.get(
-                            f"{self.LND_REST_URL}/v1/invoice/{inv.r_hash}",
-                            timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
-                        ).json()
-                        r["r_hash"] = self.to_hex_string(r["r_hash"])
-                        inv.update(**r)
+                        try:
+                            if self._mark_lnbits_settlement(inv):
+                                continue
+                            r = self.session.get(
+                                f"{self.LND_REST_URL}/v1/invoice/{inv.r_hash}",
+                                timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+                            ).json()
+                            if not isinstance(r, dict) or "r_hash" not in r:
+                                continue
+                            r["r_hash"] = self.to_hex_string(r["r_hash"])
+                            inv.update(**r)
+                        except Exception as e:
+                            app.logger.exception(
+                                f"error refreshing invoice {inv.r_hash}: {e}"
+                            )
                 except Exception as e:
                     app.logger.exception(f"error: {e}")
 
@@ -788,10 +909,69 @@ class BitcoinLightning(Crypto):
         return [info]
 
     def get_confirmations_by_txid(self, txid, store_id=None) -> int:
-        return 999
+        """999 settled, 0 still pending, -1 failed. A hash alone is not settlement."""
+        try:
+            state = self._outgoing_payment_state(txid, store_id)
+        except Exception:
+            app.logger.exception("Lightning payment status lookup failed for %s", txid)
+            return 0
+        if state == "success":
+            return 999
+        if state == "failed":
+            return -1
+        return 0
+
+    def _outgoing_payment_state(self, payment_hash: str, store_id=None) -> str:
+        wallet = self.prepare_store(store_id)
+        status, body = self._lnbits_api(
+            "GET", f"/api/v1/payments/{payment_hash}", wallet.invoice_key
+        )
+        if status >= 300 or not isinstance(body, dict):
+            return "pending"
+        return self._payment_state_from_body(body)
+
+    @staticmethod
+    def _payment_state_from_body(body: dict) -> str:
+        if body.get("paid") is True:
+            return "success"
+        details = body.get("details")
+        return BitcoinLightning._payment_outcome(
+            details if isinstance(details, dict) else body
+        )
+
+    @staticmethod
+    def _payment_outcome(result: dict) -> str:
+        status = str(result.get("status") or "").lower()
+        if status in ("failed", "expired"):
+            return "failed"
+        if status in ("success", "settled", "complete", "completed"):
+            return "success"
+        if status == "pending" or result.get("pending") is True:
+            return "pending"
+        if result.get("pending") is False and result.get("preimage"):
+            return "success"
+        if result.get("pending") is False:
+            return "failed"
+        return "pending"
+
+    @staticmethod
+    def _invoice_payment_hash(decoded: dict):
+        value = str(decoded.get("payment_hash") or "")
+        if len(value) == 64 and all(c in "0123456789abcdefABCDEF" for c in value):
+            return value.lower()
+        try:
+            decoded_hash = base64.b64decode(value, validate=True).hex()
+        except Exception:
+            return value or None
+        if len(decoded_hash) == 64:
+            return decoded_hash
+        return value or None
 
     def estimate_tx_fee(self, amount, **kwargs):
-        pay_req, lnurl_info = self.lnurl_to_pr(kwargs["address"])
+        try:
+            pay_req, lnurl_info = self.lnurl_to_pr(kwargs["address"])
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
         app.logger.debug(f"Estimated TX fee for {pay_req}:")
         decoded_pay_req = self.session.get(
             f"{self.LND_REST_URL}/v1/payreq/{pay_req}",
@@ -828,6 +1008,35 @@ class BitcoinLightning(Crypto):
             "lnurl_info": lnurl_info,
         }
 
+    def _decoded_payment_request(self, destination: str, amount: Decimal):
+        pay_req, _lnurl_info = self.lnurl_to_pr(
+            destination, remove_exponent(self.btc_to_msat(amount))
+        )
+        decoded = self.session.get(
+            f"{self.LND_REST_URL}/v1/payreq/{pay_req}",
+            timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
+        ).json()
+        return pay_req, decoded
+
+    @staticmethod
+    def _fixed_amount_conflict(decoded: dict, amount: Decimal):
+        """A bolt11 must carry this transfer's amount. Amountless invoices are rejected."""
+        if "destination" not in decoded:
+            return decoded.get("message") or str(decoded)
+        encoded = int(decoded.get("num_satoshis") or 0)
+        requested = int(BitcoinLightning.btc_to_sat(amount))
+        if encoded == 0:
+            return (
+                "Amountless invoices are not supported. "
+                "Use an LNURL or a fixed-amount invoice that matches this transfer."
+            )
+        if encoded != requested:
+            return (
+                f"Invoice amount is {encoded} sats but this transfer is "
+                f"{requested} sats."
+            )
+        return None
+
     def mkpayout(
         self,
         destination: str,
@@ -835,36 +1044,65 @@ class BitcoinLightning(Crypto):
         fee: int,
         subtract_fee_from_amount: bool = False,
         store_id=None,
+        bolt11=None,
+        encoded_sats=None,
     ):
         amount = Decimal(amount)
         try:
             wallet = self.prepare_store(store_id)
         except Exception as exc:
             return {"result": None, "error": {"message": str(exc)}}
-        return self._send_payment(destination, amount, wallet)
+        return self._send_payment(
+            destination,
+            amount,
+            wallet,
+            bolt11=bolt11,
+            encoded_sats=encoded_sats,
+        )
 
-    def _send_payment(self, destination: str, amount: Decimal, wallet):
+    def _send_payment(
+        self,
+        destination: str,
+        amount: Decimal,
+        wallet,
+        bolt11=None,
+        encoded_sats=None,
+    ):
         try:
-            destination, lnurl_info = self.lnurl_to_pr(
-                destination, remove_exponent(self.btc_to_msat(amount))
-            )
+            if bolt11 is None:
+                destination, decoded_pay_req = self._decoded_payment_request(
+                    destination, amount
+                )
+                app.logger.debug(f"Decoded payment request: {decoded_pay_req!r}")
+                conflict = self._fixed_amount_conflict(decoded_pay_req, amount)
+                if conflict:
+                    return {"result": None, "error": {"message": conflict}}
+                encoded_sats = int(decoded_pay_req.get("num_satoshis") or 0)
+            else:
+                destination = bolt11
 
-            decoded_pay_req = self.session.get(
-                f"{self.LND_REST_URL}/v1/payreq/{destination}",
-                timeout=self.LIGHTNING_REQUESTS_TIMEOUT,
-            ).json()
-            app.logger.debug(f"Decoded payment request: {decoded_pay_req!r}")
-            if "destination" not in decoded_pay_req:
-                message = decoded_pay_req.get("message") or str(decoded_pay_req)
-                return {"result": None, "error": {"message": message}}
+            if not encoded_sats:
+                return {
+                    "result": None,
+                    "error": {
+                        "message": (
+                            "Amountless invoices are not supported. "
+                            "Use an LNURL or a fixed-amount invoice that matches this transfer."
+                        )
+                    },
+                }
 
             pay_body = {"out": True, "bolt11": destination}
-            if int(decoded_pay_req.get("num_satoshis") or 0) == 0:
-                pay_body["amount"] = int(self.btc_to_sat(amount))
-
-            status, result = self._lnbits_api(
-                "POST", "/api/v1/payments", wallet.admin_key, pay_body
-            )
+            try:
+                status, result = self._lnbits_api(
+                    "POST", "/api/v1/payments", wallet.admin_key, pay_body
+                )
+            except requests.RequestException as exc:
+                return {
+                    "result": None,
+                    "error": {"message": str(exc)},
+                    "unknown": True,
+                }
             app.logger.info(f"Payout result: {status} {result!r}")
 
             if status not in (200, 201):
@@ -872,23 +1110,43 @@ class BitcoinLightning(Crypto):
                     "result": None,
                     "error": {"message": self._lnbits_error(result)},
                 }
+            if not isinstance(result, dict):
+                return {
+                    "result": None,
+                    "error": {"message": f"Unknown result: {result!r}"},
+                }
 
-            payment_hash = result.get("payment_hash") or result.get("checking_id")
-            if payment_hash:
-                return {"result": payment_hash, "error": None}
+            details = result.get("details") if isinstance(result.get("details"), dict) else {}
+            payment_hash = (
+                result.get("payment_hash")
+                or result.get("checking_id")
+                or details.get("payment_hash")
+                or details.get("checking_id")
+            )
+            outcome = self._payment_state_from_body(result)
+            if outcome == "failed" or not payment_hash:
+                return {
+                    "result": None,
+                    "error": {
+                        "message": self._lnbits_error(result)
+                        if outcome == "failed"
+                        else f"Unknown result: {result!r}"
+                    },
+                }
             return {
-                "result": None,
-                "error": {"message": f"Unknown result: {result!r}"},
+                "result": payment_hash,
+                "error": None,
+                "pending": outcome != "success",
             }
 
         except Exception as e:
             app.logger.exception("")
             return {"result": None, "error": {"message": str(e)}}
 
-    def multipayout(self, payout_list, store_id=None):
-        """Pay each destination in order. Lightning has no single multi-output tx."""
+    def prepare_payouts(self, payout_list, store_id=None):
+        """Check the whole batch before any payment. Returns (prepared, error)."""
         if not payout_list:
-            return {
+            return None, {
                 "result": None,
                 "error": {"message": "Expected an array of payouts"},
                 "results": [],
@@ -902,7 +1160,7 @@ class BitcoinLightning(Crypto):
             normalized.append((dest, amount))
         available = self.balance_for_account(store_id=store_id)
         if total > available:
-            return {
+            return None, {
                 "result": None,
                 "error": {
                     "message": (
@@ -913,15 +1171,58 @@ class BitcoinLightning(Crypto):
                 "results": [],
             }
 
+        # Amountless and mismatched invoices fail here, before the fee is paid.
+        prepared = []
+        for dest, amount in normalized:
+            try:
+                pay_req, decoded = self._decoded_payment_request(dest, amount)
+            except Exception as exc:
+                return None, {
+                    "result": None,
+                    "error": {"message": str(exc)},
+                    "results": [],
+                }
+            conflict = self._fixed_amount_conflict(decoded, amount)
+            if conflict:
+                return None, {
+                    "result": None,
+                    "error": {"message": conflict},
+                    "results": [],
+                }
+            prepared.append(
+                {
+                    "dest": dest,
+                    "amount": amount,
+                    "bolt11": pay_req,
+                    "encoded_sats": int(decoded.get("num_satoshis") or 0),
+                    "payment_hash": self._invoice_payment_hash(decoded),
+                }
+            )
+        return prepared, None
+
+    def multipayout(self, payout_list, store_id=None):
+        """Pay each destination in order. Lightning has no single multi-output tx."""
+        prepared, error = self.prepare_payouts(payout_list, store_id=store_id)
+        if error:
+            return error
+
         results = []
         hashes = []
-        for dest, amount in normalized:
-            res = self.mkpayout(dest, amount, 0, store_id=store_id)
+        for item in prepared:
+            res = self.mkpayout(
+                item["dest"],
+                item["amount"],
+                0,
+                store_id=store_id,
+                bolt11=item["bolt11"],
+                encoded_sats=item["encoded_sats"],
+            )
             entry = {
-                "dest": dest,
-                "amount": str(amount),
+                "dest": item["dest"],
+                "amount": str(item["amount"]),
                 "result": res.get("result") if isinstance(res, dict) else None,
                 "error": None if isinstance(res, dict) else {"message": str(res)},
+                "pending": bool(res.get("pending")) if isinstance(res, dict) else False,
             }
             if isinstance(res, dict):
                 entry["error"] = res.get("error")
@@ -934,9 +1235,12 @@ class BitcoinLightning(Crypto):
                 }
             if entry["result"]:
                 hashes.append(entry["result"])
-        if len(results) == 1:
-            return {"result": results[0]["result"], "error": None, "results": results}
-        return {"result": hashes, "error": None, "results": results}
+        return {
+            "result": results[0]["result"] if len(results) == 1 else hashes,
+            "error": None,
+            "pending": any(item.get("pending") for item in results),
+            "results": results,
+        }
 
     def create_wallet(self):
         # moved to lndinit
@@ -994,7 +1298,7 @@ class BitcoinLightning(Crypto):
     @cached_property
     def lnbits_session(self):
         s = requests.Session()
-        s.verify = False
+        s.verify = True
         s.headers = {"X-API-KEY": self.lnbits_admin_apikey}
         return s
 
@@ -1007,28 +1311,62 @@ class BitcoinLightning(Crypto):
         app.logger.debug(f"lnbits_decode_lnurl result: {result}")
         return result
 
+    @staticmethod
+    def _is_lightning_address(destination: str) -> bool:
+        text = (destination or "").strip()
+        if "@" not in text or " " in text:
+            return False
+        local, _, domain = text.partition("@")
+        return bool(local) and "." in domain and "/" not in domain
+
+    def _resolve_lightning_address(self, destination: str) -> dict:
+        local, _, domain = destination.strip().partition("@")
+        url = f"https://{domain}/.well-known/lnurlp/{quote(local)}"
+        response = requests.get(url, timeout=self.LIGHTNING_REQUESTS_TIMEOUT)
+        response.raise_for_status()
+        info = response.json()
+        if (
+            not isinstance(info, dict)
+            or info.get("tag") != "payRequest"
+            or not info.get("callback")
+        ):
+            raise RuntimeError(
+                f"Lightning address {destination} did not return an LNURL-pay endpoint"
+            )
+        return info
+
+    def _pay_request_from_lnurl(self, lnurl_info: dict, amount):
+        if amount is None:
+            amount = lnurl_info["minSendable"]
+        callback_url = _lnurl_callback_with_amount(lnurl_info["callback"], amount)
+        app.logger.debug(f"Requesting payment request from: {callback_url}")
+        lnurl_pr_info = requests.get(
+            callback_url, timeout=self.LIGHTNING_REQUESTS_TIMEOUT
+        ).json()
+        app.logger.debug(f"Payment request response: {lnurl_pr_info}")
+        invoice = lnurl_pr_info.get("pr") if isinstance(lnurl_pr_info, dict) else None
+        if not invoice:
+            reason = (
+                lnurl_pr_info.get("reason")
+                if isinstance(lnurl_pr_info, dict)
+                else None
+            )
+            raise RuntimeError(reason or "LNURL callback did not return an invoice")
+        return invoice, lnurl_info
+
     def lnurl_to_pr(self, destination, amount=None):
         app.logger.debug(
             f"lnurl_to_pr called with destination={destination}, amount={amount}"
         )
+        destination = (destination or "").strip()
+        if self._is_lightning_address(destination):
+            lnurl_info = self._resolve_lightning_address(destination)
+            return self._pay_request_from_lnurl(lnurl_info, amount)
         try:
             app.logger.debug(f"Decoding LNURL: {destination}")
             lnurl_info = self.lnbits_decode_lnurl(destination)
             app.logger.debug(f"LNURL decoded: {lnurl_info}")
-
-            if amount is None:
-                amount = lnurl_info["minSendable"]
-
-            callback_url = f"{lnurl_info['callback']}?amount={amount}"
-            app.logger.debug(f"Requesting payment request from: {callback_url}")
-            lnurl_pr_info = requests.get(callback_url).json()
-            app.logger.debug(f"Payment request response: {lnurl_pr_info}")
-
-            new_destination = lnurl_pr_info["pr"]
-            app.logger.debug(
-                f"Successfully converted LNURL to payment request: {new_destination}"
-            )
-            return new_destination, lnurl_info
+            return self._pay_request_from_lnurl(lnurl_info, amount)
         except Exception as e:
             app.logger.debug(
                 f"Failed to convert LNURL, using original destination. Error: {e}"

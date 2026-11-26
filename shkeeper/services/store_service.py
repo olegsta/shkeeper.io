@@ -570,18 +570,6 @@ def _is_lightning(crypto_name: str) -> bool:
     return crypto_name == "BTC-LIGHTNING"
 
 
-def _is_valid_lightning_destination(address: str) -> bool:
-    """BOLT11, LNURL, or a lightning address (user@domain)."""
-    text = (address or "").strip()
-    low = text.lower()
-    if low.startswith(("lnbc", "lntb", "lnbcrt", "lnurl")):
-        return len(text) >= 10
-    if "@" in text and " " not in text:
-        local, _, domain = text.partition("@")
-        return bool(local) and "." in domain and "/" not in domain
-    return False
-
-
 def _is_utxo_like(crypto_name: str) -> bool:
     from shkeeper.modules.classes.utxo_like_wallet_crypto import UtxoLikeWalletCrypto
 
@@ -593,7 +581,7 @@ def _is_utxo_like(crypto_name: str) -> bool:
 
 def _is_valid_fee_collection_format(crypto_name: str, address: str) -> bool:
     if _is_lightning(crypto_name):
-        return _is_valid_lightning_destination(address)
+        return True
     if _is_utxo_like(crypto_name):
         return _is_valid_utxo_address(address, crypto_name)
     if _is_tron_like(crypto_name):
@@ -657,11 +645,13 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
 
     ETH/Tron: must be external or an FDA — not a generated invoice/hot address.
     BTC/LTC/DOGE: any non-empty destination is stored as-is.
-    BTC-LIGHTNING: BOLT11, LNURL, or a lightning address.
+    BTC-LIGHTNING: the address entered by the admin is stored as-is.
     """
     address = (address or "").strip() or None
     if not address:
         return None
+    if _is_lightning(crypto_name):
+        return address
     if not _is_valid_fee_collection_format(crypto_name, address):
         if _is_lightning(crypto_name):
             family = "Lightning"
@@ -698,14 +688,14 @@ def validate_fee_collection_address(crypto_name: str, address: str | None) -> st
 
 
 def validate_merchant_wallet_address(crypto_name: str, address: str | None) -> str | None:
-    """Merchant (cold) wallet. Format-only: Lightning destinations are not 0x addresses."""
+    """Merchant (cold) wallet. A Lightning destination is stored as entered."""
     address = (address or "").strip() or None
     if not address:
         return None
+    if _is_lightning(crypto_name):
+        return address
     if not _is_valid_fee_collection_format(crypto_name, address):
-        if _is_lightning(crypto_name):
-            family = "Lightning"
-        elif _is_tron_like(crypto_name):
+        if _is_tron_like(crypto_name):
             family = "TRON"
         elif _is_utxo_like(crypto_name):
             family = crypto_name
@@ -713,6 +703,15 @@ def validate_merchant_wallet_address(crypto_name: str, address: str | None) -> s
             family = "Ethereum"
         raise ValueError(f"Invalid {family} address: {address}")
     return address
+
+
+def update_store_wallet_destinations(sw, cold_wallet_address, fee_address):
+    """Validate and store the merchant and admin payout destinations."""
+    sw.cold_wallet_address = validate_merchant_wallet_address(
+        sw.crypto, cold_wallet_address
+    )
+    sw.fee_collection_address = validate_fee_collection_address(sw.crypto, fee_address)
+    return sw
 
 
 def get_global_fee_collection_address(crypto_name: str):

@@ -236,6 +236,7 @@ def poll_unconfirmed_payouts():
         if not crypto:
             continue
         all_confirmed = False
+        payment_failed = False
         tx_to_notify = None
         for tx in payout.transactions:
             if not tx or not getattr(tx, "txid", None):
@@ -257,11 +258,19 @@ def poll_unconfirmed_payouts():
                     tx.txid,
                 )
                 continue
+            # Lightning returns -1 when LNbits reports a definitive failure.
+            if confirmations < 0:
+                payment_failed = True
+                break
             if confirmations >= int(app.config.get("MIN_CONFIRMATION_BLOCK_FOR_PAYOUT")):
                 all_confirmed = True
                 if not tx_to_notify:
                     tx_to_notify = tx
-        if all_confirmed:
+        if payment_failed:
+            payout.status = PayoutStatus.FAIL
+            payout.success = "No"
+            payout.error = "Lightning payment failed"
+        elif all_confirmed:
             app.logger.info(f"poll_unconfirmed_payouts all_confirmed {payout}")
             app.logger.info(f"poll_unconfirmed_payouts tx_to_notify {tx_to_notify}")
             payout.status = PayoutStatus.SUCCESS

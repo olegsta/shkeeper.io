@@ -168,14 +168,22 @@ function decode_pay_req() {
       console.log(data);
 
       if (data.lnurl_info) {
-          minSendable = (data.lnurl_info.minSendable / 100_000_000_000).toFixed(8);
-          maxSendable = (data.lnurl_info.maxSendable / 100_000_000_000).toFixed(8);
-          amount_btc.min = minSendable;
-          amount_btc.max = maxSendable;
-          amount_btc.value = minSendable;
+          if (data.payout_min && data.payout_max) {
+            amount_btc.min = Number(data.payout_min).toFixed(8);
+            amount_btc.max = Number(data.payout_max).toFixed(8);
+            amount_btc.value = Number(data.payout_amount || data.payout_min).toFixed(8);
+          } else {
+            minSendable = (data.lnurl_info.minSendable / 100_000_000_000).toFixed(8);
+            maxSendable = (data.lnurl_info.maxSendable / 100_000_000_000).toFixed(8);
+            amount_btc.min = minSendable;
+            amount_btc.max = maxSendable;
+            amount_btc.value = minSendable;
+          }
       } else {
         if (data.payment_request_details) {
-          let amount = (data.payment_request_details.num_satoshis / 100_000_000).toFixed(8);
+          let amount = data.payout_amount
+            ? Number(data.payout_amount).toFixed(8)
+            : (data.payment_request_details.num_satoshis / 100_000_000).toFixed(8);
           amount_btc.value = amount;
           amount_btc.min = amount;
           amount_btc.max = amount;
@@ -250,6 +258,8 @@ if (maxAmount > 0) {
       console.log(data);
       if (data.error) {
         alert(`Invoice payment failure: ${data.error.message}`);
+      } else if (data.pending) {
+        alert(`Invoice payment is pending confirmation.`);
       } else {
         alert(`Invoice payment success.`);
       }
