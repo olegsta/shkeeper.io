@@ -36,6 +36,8 @@ MULTISTORE_SUPPORTED = frozenset(
         "BTC",
         "LTC",
         "DOGE",
+        # Lightning shares one LND node; balances are split per store in-process.
+        "BTC-LIGHTNING",
     }
 )
 
@@ -61,18 +63,22 @@ def is_multistore_backend(crypto) -> bool:
     from shkeeper.modules.classes.ethereum import Ethereum
     from shkeeper.modules.classes.utxo_like_wallet_crypto import UtxoLikeWalletCrypto
     from shkeeper.modules.classes.tron_token import TronToken
+    from shkeeper.modules.cryptos.bitcoin_lightning import BitcoinLightning
 
-    return isinstance(crypto, (Ethereum, TronToken, UtxoLikeWalletCrypto))
+    return isinstance(
+        crypto, (Ethereum, TronToken, UtxoLikeWalletCrypto, BitcoinLightning)
+    )
 
 
 def uses_fee_deposit_account(crypto) -> bool:
-    """ETH-like and Tron have an FDA; BTC/LTC/DOGE do not."""
+    """ETH-like and Tron have an FDA. BTC/LTC/DOGE and Lightning do not."""
     if crypto is None:
         return False
     from shkeeper.modules.classes.utxo_like_wallet_crypto import UtxoLikeWalletCrypto
+    from shkeeper.modules.cryptos.bitcoin_lightning import BitcoinLightning
 
     return is_multistore_backend(crypto) and not isinstance(
-        crypto, UtxoLikeWalletCrypto
+        crypto, (UtxoLikeWalletCrypto, BitcoinLightning)
     )
 
 
@@ -90,7 +96,7 @@ def store_wallet_is_ready(sw, crypto=None) -> bool:
         crypto = Crypto.instances.get(getattr(sw, "crypto", None))
     if crypto is None:
         crypto_name = getattr(sw, "crypto", None)
-        if crypto_name in ("BTC", "LTC", "DOGE"):
+        if crypto_name in ("BTC", "LTC", "DOGE", "BTC-LIGHTNING"):
             return True
         return bool(getattr(sw, "fda_address", None))
     if uses_fee_deposit_account(crypto):
